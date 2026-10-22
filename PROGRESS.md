@@ -276,7 +276,7 @@ cableado y la validación física.
 
 ### Publicación
 
-- Rama `fase-3`, pendiente de publicar al cerrar este registro.
+- Rama `fase-3`, commits `db6fb28` y `bab40a5`, publicada en `origin/fase-3`.
 
 ## Fase 4 — Aire (HTU21D)
 
