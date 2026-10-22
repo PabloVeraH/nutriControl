@@ -55,6 +55,15 @@ class FlowCounter:
             return self._last_rate, self.total_l
 
 
+def calculate_pulses_per_liter(pulses: int, liters: float) -> float:
+    """Calcula la calibración a partir de los pulsos contados y el volumen vertido."""
+    if liters <= 0:
+        raise ValueError("los litros deben ser positivos")
+    if pulses <= 0:
+        raise ValueError("no se registraron pulsos; revisa el cableado y el flujo")
+    return pulses / liters
+
+
 class FlowHallSensor:
     """Sensor de flujo con contador persistente en /data."""
 

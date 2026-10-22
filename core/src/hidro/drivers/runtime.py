@@ -67,13 +67,13 @@ class RuntimeContext:
         self._devices.append(device)
         return device
 
-    def gpio_input(self, gpio: int, *, pull_up: bool) -> Any:
+    def gpio_input(self, gpio: int, *, pull_up: bool, bounce_time: float | None = 0.02) -> Any:
         self._require_gpiochip()
         try:
             from gpiozero import DigitalInputDevice
         except ImportError as exc:  # pragma: no cover - depende del hardware
             raise DriverError("falta gpiozero; instalar las dependencias de hardware") from exc
-        device = DigitalInputDevice(gpio, pull_up=pull_up, bounce_time=0.02)
+        device = DigitalInputDevice(gpio, pull_up=pull_up, bounce_time=bounce_time)
         self._devices.append(device)
         return device
 

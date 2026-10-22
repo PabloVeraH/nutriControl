@@ -6,7 +6,11 @@ from pathlib import Path
 import pytest
 from conftest import FakeClock
 
-from hidro.drivers.flow_hall import FlowCounter, FlowHallSensor
+from hidro.drivers.flow_hall import (
+    FlowCounter,
+    FlowHallSensor,
+    calculate_pulses_per_liter,
+)
 
 
 class FakeDevice:
@@ -47,6 +51,18 @@ def test_counter_first_sample_has_no_rate() -> None:
 def test_counter_rejects_zero_ppl() -> None:
     with pytest.raises(ValueError):
         FlowCounter(0)
+
+
+def test_calculate_pulses_per_liter() -> None:
+    assert calculate_pulses_per_liter(5880, 1.0) == pytest.approx(5880.0)
+    assert calculate_pulses_per_liter(2940, 0.5) == pytest.approx(5880.0)
+
+
+def test_calculate_pulses_per_liter_rejects_bad_values() -> None:
+    with pytest.raises(ValueError):
+        calculate_pulses_per_liter(0, 1.0)
+    with pytest.raises(ValueError):
+        calculate_pulses_per_liter(100, 0)
 
 
 def test_sensor_counts_all_pulses(tmp_path: Path) -> None:

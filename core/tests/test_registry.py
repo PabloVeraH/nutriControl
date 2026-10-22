@@ -20,6 +20,7 @@ from hidro.drivers.mock.tds_analog import MockTDSAnalogSensor
 from hidro.drivers.registry import (
     build_all,
     build_outputs,
+    build_sensors,
     describe_driver,
     flow_total_path,
     load_flow_total,
@@ -106,6 +107,42 @@ def test_flow_calibration_overrides_config(tmp_path: Path) -> None:
     _, sensors = build_all(config, ctx)
     flow = next(sensor for sensor in sensors if sensor.id == "flow")
     assert flow.counter.pulses_per_liter == 5000
+
+
+def test_hardware_flow_disables_debounce(tmp_path: Path) -> None:
+    class FakeFlowDevice:
+        when_pressed = None
+
+        def close(self) -> None:
+            pass
+
+    class FakeContext:
+        mode = "hardware"
+        data_dir = tmp_path
+
+        def __init__(self) -> None:
+            self.calibration = CalibrationStore(tmp_path / "calibration.yaml")
+            self.calls: list[tuple[int, bool, float | None]] = []
+
+        def gpio_input(
+            self, gpio: int, *, pull_up: bool, bounce_time: float | None = 0.02
+        ) -> FakeFlowDevice:
+            self.calls.append((gpio, pull_up, bounce_time))
+            return FakeFlowDevice()
+
+    config = AppConfig.model_validate(
+        {
+            "mode": "hardware",
+            "sensors": [{"id": "flow", "type": "flow_hall", "gpio": 27}],
+            "outputs": [],
+        }
+    )
+    ctx = FakeContext()
+
+    sensors = build_sensors(config, ctx)
+
+    assert [sensor.id for sensor in sensors] == ["flow"]
+    assert ctx.calls == [(27, False, None)]
 
 
 def test_flow_total_is_loaded_from_data_dir(tmp_path: Path) -> None:

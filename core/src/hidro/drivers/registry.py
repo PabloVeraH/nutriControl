@@ -161,7 +161,7 @@ def build_sensors(config: AppConfig, ctx: RuntimeContext) -> list[Sensor]:
                 sensors.append(
                     FlowHallSensor(
                         cfg.id,
-                        ctx.gpio_input(cfg.gpio, pull_up=False),
+                        ctx.gpio_input(cfg.gpio, pull_up=False, bounce_time=None),
                         counter,
                         total_path,
                     )

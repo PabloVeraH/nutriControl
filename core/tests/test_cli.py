@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from conftest import FakePump, FakeSwitch
+from conftest import FakePump, FakeSwitch, make_config
 
 from hidro import cli
 
@@ -105,3 +105,166 @@ def test_switch_reports_unknown_output(
 
     assert app.closed
     assert "no existe la salida" in capsys.readouterr().err
+
+
+class FakeFlowDevice:
+    def __init__(self) -> None:
+        self.when_pressed = None
+        self.closed = False
+
+    def pulse(self, count: int = 1) -> None:
+        for _ in range(count):
+            assert self.when_pressed is not None
+            self.when_pressed()
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class FakeRuntime:
+    def __init__(self, device: FakeFlowDevice) -> None:
+        self.device = device
+        self.closed = False
+        self.gpio: tuple[int, bool, float | None] | None = None
+
+    def gpio_input(
+        self, gpio: int, *, pull_up: bool, bounce_time: float | None = 0.02
+    ) -> FakeFlowDevice:
+        self.gpio = (gpio, pull_up, bounce_time)
+        return self.device
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class FakeStore:
+    def __init__(self) -> None:
+        self.saved: float | None = None
+
+    def flow(self) -> None:
+        return None
+
+    def save_flow(self, *, pulses_per_liter: float) -> None:
+        self.saved = pulses_per_liter
+
+
+def test_calibrate_flow_saves_pulses_per_liter(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config = make_config(mode="hardware")
+    settings = SimpleNamespace(
+        config_path=tmp_path / "hidro.yaml",
+        data_dir=tmp_path,
+        mode_override=None,
+    )
+    store = FakeStore()
+    device = FakeFlowDevice()
+    runtime = FakeRuntime(device)
+    prompts: list[str] = []
+
+    monkeypatch.setattr(cli, "_settings", lambda verbose=True: settings)
+    monkeypatch.setattr(cli, "load_config", lambda *_args: config)
+    monkeypatch.setattr(cli, "CalibrationStore", lambda _path: store)
+    monkeypatch.setattr("hidro.drivers.runtime.RuntimeContext", lambda *_args: runtime)
+
+    def fake_input(prompt: str = "") -> str:
+        prompts.append(prompt)
+        if len(prompts) == 2:
+            device.pulse(5880)
+        return ""
+
+    monkeypatch.setattr("builtins.input", fake_input)
+
+    assert cli.cmd_calibrate_flow(Namespace(id=None, liters=1.0)) == 0
+
+    assert store.saved == pytest.approx(5880.0)
+    assert runtime.gpio == (27, False, None)
+    assert runtime.closed
+    assert len(prompts) == 2
+
+
+def test_calibrate_flow_rejects_no_pulses(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config = make_config(mode="hardware")
+    settings = SimpleNamespace(
+        config_path=tmp_path / "hidro.yaml",
+        data_dir=tmp_path,
+        mode_override=None,
+    )
+    store = FakeStore()
+    runtime = FakeRuntime(FakeFlowDevice())
+
+    monkeypatch.setattr(cli, "_settings", lambda verbose=True: settings)
+    monkeypatch.setattr(cli, "load_config", lambda *_args: config)
+    monkeypatch.setattr(cli, "CalibrationStore", lambda _path: store)
+    monkeypatch.setattr("hidro.drivers.runtime.RuntimeContext", lambda *_args: runtime)
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "")
+
+    assert cli.cmd_calibrate_flow(Namespace(id=None, liters=1.0)) == 2
+
+    assert store.saved is None
+    assert runtime.closed
+    assert "no se registraron pulsos" in capsys.readouterr().err
+
+
+def test_calibrate_flow_requires_hardware_mode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    settings = SimpleNamespace(
+        config_path=tmp_path / "hidro.yaml",
+        data_dir=tmp_path,
+        mode_override=None,
+    )
+    monkeypatch.setattr(cli, "_settings", lambda verbose=True: settings)
+    monkeypatch.setattr(cli, "load_config", lambda *_args: make_config())
+
+    assert cli.cmd_calibrate_flow(Namespace(id=None, liters=1.0)) == 2
+
+    assert "modo hardware" in capsys.readouterr().err
+
+
+def test_parser_accepts_calibrate_flow() -> None:
+    args = cli.build_parser().parse_args(["calibrate", "flow", "--liters", "0.5"])
+
+    assert args.func is cli.cmd_calibrate_flow
+    assert args.sensor == "flow"
+    assert args.liters == 0.5
+
+
+def test_flow_measures_rate(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config = make_config(mode="hardware")
+    settings = SimpleNamespace(
+        config_path=tmp_path / "hidro.yaml",
+        data_dir=tmp_path,
+        mode_override=None,
+    )
+    device = FakeFlowDevice()
+    runtime = FakeRuntime(device)
+    now = [1000.0]
+    monkeypatch.setattr(cli, "_settings", lambda verbose=True: settings)
+    monkeypatch.setattr(cli, "load_config", lambda *_args: config)
+    monkeypatch.setattr("hidro.drivers.runtime.RuntimeContext", lambda *_args: runtime)
+    monkeypatch.setattr(cli.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "")
+
+    def fake_sleep(seconds: float) -> None:
+        now[0] += seconds
+        device.pulse(98)
+
+    monkeypatch.setattr(cli.time, "sleep", fake_sleep)
+
+    assert cli.cmd_flow(Namespace(id=None, seconds=1.0)) == 0
+
+    out = capsys.readouterr().out
+    assert "caudal: 1.000 L/min" in out
+    assert runtime.closed
+
+
+def test_parser_accepts_flow() -> None:
+    args = cli.build_parser().parse_args(["flow", "--seconds", "2"])
+
+    assert args.func is cli.cmd_flow
+    assert args.seconds == 2.0
