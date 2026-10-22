@@ -472,6 +472,12 @@ hardware y las soluciones de calibración.
 Los comandos concretos están en el README, sección "Fase 5: pH y TDS
 (ADS1115)".
 
+### Publicación
+
+- Rama `fase-5`, commits `30e9d85`, `4de997c` y `0feac8e`, publicada en
+  `origin/fase-5`. La calibración física y el punto de control siguen
+  pendientes de hardware y soluciones.
+
 ## Fase 6 — Bomba y dosificación
 
 Pendiente de hardware (fuente de 12 V).
