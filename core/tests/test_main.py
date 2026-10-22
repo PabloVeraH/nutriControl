@@ -148,6 +148,8 @@ def test_dose_reports_pump_errors(tmp_path: Path) -> None:
     Controller(app)._dose(NOW, DosingFlags())
 
     assert any("ERROR AL DOSIFICAR" in message for message in app.notifier.messages)
+    assert app.safety.is_blocked("pump_ph_down")
+    assert "safety reset" in app.notifier.messages[0]
     app.close()
 
 

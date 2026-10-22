@@ -46,6 +46,21 @@ def test_manual_block_and_reset(tmp_path: Path) -> None:
     assert reloaded.block_reason("pump_ph_down", 1.0, NOW) is None
 
 
+def test_reset_one_pump_keeps_the_others(tmp_path: Path) -> None:
+    guard = make_guard(tmp_path, max_doses_per_hour=1, max_ml_per_day={})
+    guard.record("pump_ph_down", 1.0, NOW)
+    guard.record("pump_nutrient_a", 1.0, NOW)
+    guard.block("pump_ph_down", "ph down")
+    guard.block("pump_nutrient_a", "nutrient")
+
+    guard.reset("pump_ph_down")
+
+    assert not guard.is_blocked("pump_ph_down")
+    assert guard.block_reason("pump_ph_down", 1.0, NOW) is None
+    assert guard.is_blocked("pump_nutrient_a")
+    assert guard.block_reason("pump_nutrient_a", 1.0, NOW) == "nutrient"
+
+
 def test_reset_all_and_prune(tmp_path: Path) -> None:
     guard = make_guard(tmp_path)
     guard.record("pump_ph_down", 1.0, NOW - timedelta(days=3))

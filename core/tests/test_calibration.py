@@ -115,8 +115,9 @@ def test_store_rejects_negative_values(tmp_path: Path) -> None:
         store.save_ec(k=0, standard_us_cm=1413, voltage=1.0, t_c=25.0)
     with pytest.raises(ValueError):
         store.save_flow(pulses_per_liter=0)
-    with pytest.raises(ValueError):
-        store.save_pump("pump", 0)
+    for value in (0, float("nan"), float("inf")):
+        with pytest.raises(ValueError, match="finito y positivo"):
+            store.save_pump("pump", value)
 
 
 def test_ec_k_bounds_and_reasonableness(tmp_path: Path) -> None:

@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from conftest import FakePump, FakeSwitch, make_config
+from conftest import FakePump, FakeSwitch, base_config_dict, make_config
 
 from hidro import cli
 from hidro.calibration import CalibrationStore
@@ -378,6 +378,220 @@ class FakeCalibrationRuntime:
 
     def close(self) -> None:
         self.closed = True
+
+
+def install_pump_calibration(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    config: AppConfig,
+    runtime: FakeCalibrationRuntime,
+) -> None:
+    settings = SimpleNamespace(
+        config_path=tmp_path / "hidro.yaml", data_dir=tmp_path, mode_override=None
+    )
+    monkeypatch.setattr(cli, "_settings", lambda verbose=True: settings)
+    monkeypatch.setattr(cli, "load_config", lambda *_args: config)
+    monkeypatch.setattr("hidro.drivers.runtime.RuntimeContext", lambda *_args: runtime)
+
+
+def test_calibrate_pump_saves_ml_per_min(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runtime = FakeCalibrationRuntime()
+    install_pump_calibration(
+        monkeypatch, tmp_path, config=make_config(mode="hardware"), runtime=runtime
+    )
+    slept: list[float] = []
+    monkeypatch.setattr(cli.time, "sleep", lambda seconds: slept.append(seconds))
+    answers = iter(["s", "12", "s"])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
+
+    code = cli.cmd_calibrate_pump(
+        Namespace(id=None, seconds=60.0, ml=None, yes=False)
+    )
+
+    assert code == 0
+    assert slept == [60.0]
+    assert runtime.gpio_calls == [(22, True, False)]
+    assert runtime.device.events == ["on", "off"]
+    assert runtime.closed
+    store = CalibrationStore(tmp_path / "calibration.yaml")
+    assert store.pump_ml_per_min("pump_ph_down") == pytest.approx(12.0)
+    assert "calibración guardada" in capsys.readouterr().out
+
+
+def test_calibrate_pump_accepts_measured_volume(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    runtime = FakeCalibrationRuntime()
+    install_pump_calibration(
+        monkeypatch, tmp_path, config=make_config(mode="hardware"), runtime=runtime
+    )
+    monkeypatch.setattr(cli.time, "sleep", lambda _seconds: None)
+
+    code = cli.cmd_calibrate_pump(
+        Namespace(id="pump_ph_down", seconds=30.0, ml=6.0, yes=True)
+    )
+
+    assert code == 0
+    assert runtime.device.events == ["on", "off"]
+    store = CalibrationStore(tmp_path / "calibration.yaml")
+    assert store.pump_ml_per_min("pump_ph_down") == pytest.approx(12.0)
+
+
+def test_calibrate_pump_can_be_cancelled(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runtime = FakeCalibrationRuntime()
+    install_pump_calibration(
+        monkeypatch, tmp_path, config=make_config(mode="hardware"), runtime=runtime
+    )
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "n")
+
+    code = cli.cmd_calibrate_pump(
+        Namespace(id=None, seconds=60.0, ml=None, yes=False)
+    )
+
+    assert code == 1
+    assert runtime.device.events == []
+    assert not runtime.closed
+    assert "cancelada" in capsys.readouterr().out
+
+
+def test_calibrate_pump_turns_off_after_interrupt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    runtime = FakeCalibrationRuntime()
+    install_pump_calibration(
+        monkeypatch, tmp_path, config=make_config(mode="hardware"), runtime=runtime
+    )
+
+    def interrupted(_seconds: float) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli.time, "sleep", interrupted)
+
+    code = cli.cmd_calibrate_pump(
+        Namespace(id=None, seconds=60.0, ml=12.0, yes=True)
+    )
+
+    assert code == 130
+    assert runtime.device.events == ["on", "off"]
+    assert runtime.closed
+
+
+@pytest.mark.parametrize(("seconds", "ml"), [(0.0, 10.0), (121.0, 10.0), (60.0, 0.0)])
+def test_calibrate_pump_rejects_invalid_measurements(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    seconds: float,
+    ml: float,
+) -> None:
+    runtime = FakeCalibrationRuntime()
+    install_pump_calibration(
+        monkeypatch, tmp_path, config=make_config(mode="hardware"), runtime=runtime
+    )
+
+    code = cli.cmd_calibrate_pump(
+        Namespace(id=None, seconds=seconds, ml=ml, yes=True)
+    )
+
+    assert code == 2
+    assert runtime.device.events == []
+    assert "debe ser" in capsys.readouterr().err
+
+
+def test_calibrate_pump_confirms_outlier(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    raw = base_config_dict()
+    raw["outputs"][1]["ml_per_min"] = 10.0
+    config = make_config(mode="hardware", outputs=raw["outputs"], dosing=raw["dosing"])
+    runtime = FakeCalibrationRuntime()
+    install_pump_calibration(monkeypatch, tmp_path, config=config, runtime=runtime)
+    monkeypatch.setattr(cli.time, "sleep", lambda _seconds: None)
+    answers = iter(["s", ""])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
+
+    code = cli.cmd_calibrate_pump(
+        Namespace(id=None, seconds=60.0, ml=1.0, yes=False)
+    )
+
+    assert code == 1
+    assert runtime.device.events == ["on", "off"]
+    assert "se aleja mucho" in capsys.readouterr().err
+    store = CalibrationStore(tmp_path / "calibration.yaml")
+    assert store.pump_ml_per_min("pump_ph_down") is None
+
+
+def test_calibrate_pump_requires_id_with_multiple_pumps(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    raw = base_config_dict()
+    raw["outputs"].append(
+        {"id": "pump_nutrient_a", "type": "peristaltic", "gpio": 5}
+    )
+    config = make_config(mode="hardware", outputs=raw["outputs"])
+    runtime = FakeCalibrationRuntime()
+    install_pump_calibration(monkeypatch, tmp_path, config=config, runtime=runtime)
+
+    code = cli.cmd_calibrate_pump(
+        Namespace(id=None, seconds=60.0, ml=12.0, yes=True)
+    )
+
+    assert code == 2
+    assert runtime.device.events == []
+    assert "--id" in capsys.readouterr().err
+
+
+def test_calibrate_pump_requires_hardware(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runtime = FakeCalibrationRuntime()
+    install_pump_calibration(
+        monkeypatch, tmp_path, config=make_config(), runtime=runtime
+    )
+
+    code = cli.cmd_calibrate_pump(
+        Namespace(id=None, seconds=60.0, ml=12.0, yes=True)
+    )
+
+    assert code == 2
+    assert runtime.device.events == []
+    assert "modo hardware" in capsys.readouterr().err
+
+
+def test_parser_accepts_calibrate_pump() -> None:
+    args = cli.build_parser().parse_args(
+        ["calibrate", "pump", "--seconds", "30", "--ml", "10"]
+    )
+
+    assert args.func is cli.cmd_calibrate_pump
+    assert args.sensor == "pump"
+    assert args.seconds == 30.0
+    assert args.ml == 10.0
+
+
+def test_parser_accepts_safety_reset() -> None:
+    args = cli.build_parser().parse_args(["safety", "reset", "pump_ph_down"])
+
+    assert args.func is cli.cmd_safety_reset
+    assert args.safety_action == "reset"
+    assert args.pump == "pump_ph_down"
+
+
+def test_parser_keeps_legacy_safety_reset() -> None:
+    args = cli.build_parser().parse_args(["safety-reset"])
+
+    assert args.func is cli.cmd_safety_reset
+    assert args.pump is None
+
+
+def test_pump_rejects_invalid_volume(capsys: pytest.CaptureFixture[str]) -> None:
+    assert cli.cmd_pump(Namespace(id="pump", ml=0.0, yes=True)) == 2
+    assert "--ml" in capsys.readouterr().err
 
 
 def install_calibration(

@@ -77,17 +77,25 @@ class SafetyGuard:
         self._save()
 
     def block(self, pump_id: str, reason: str) -> None:
+        if self._blocked.get(pump_id) == reason:
+            return
         if pump_id not in self._blocked:
             logger.error("bomba %s bloqueada: %s", pump_id, reason)
+        else:
+            logger.error("bomba %s sigue bloqueada: %s", pump_id, reason)
         self._blocked[pump_id] = reason
         self._save()
 
     def reset(self, pump_id: str | None = None) -> None:
         if pump_id is None:
             self._blocked.clear()
+            self._records.clear()
         else:
+            # Reiniciar una bomba no debe borrar los límites de las demás.
             self._blocked.pop(pump_id, None)
-        self._records.clear()
+            self._records = [
+                record for record in self._records if record.pump_id != pump_id
+            ]
         self._save()
         logger.info("seguridad reiniciada para %s", pump_id or "todas las bombas")
 

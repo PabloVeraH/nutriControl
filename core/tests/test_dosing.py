@@ -4,7 +4,7 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
-from conftest import NOW, FakePump, make_config, measurement
+from conftest import NOW, FakePump, base_config_dict, make_config, measurement
 
 from hidro.control.dosing import (
     NUTRIENT_A,
@@ -257,10 +257,38 @@ def test_safety_block_is_reported(tmp_path: Path) -> None:
     decision = controller.plan(NOW, DosingFlags())
     assert decision.actions == []
     assert "bloqueada por seguridad" in decision.notices[0].message
-    assert "safety-reset" in decision.notices[0].message
+    assert "safety reset" in decision.notices[0].message
 
 
-def test_hourly_limit_blocks_dose(tmp_path: Path) -> None:
+def test_custom_sensor_ids_and_pump_roles(tmp_path: Path) -> None:
+    raw = base_config_dict()
+    raw["sensors"][2]["id"] = "ph_probe"
+    raw["sensors"][3]["id"] = "ec_probe"
+    raw["outputs"][1]["id"] = "dosificador"
+    raw["outputs"][1]["role"] = "ph_down"
+    raw["dosing"]["limits"]["max_ml_per_day"] = {"dosificador": 20}
+    config = make_config(
+        sensors=raw["sensors"], outputs=raw["outputs"], dosing=raw["dosing"]
+    )
+    latest = LatestReadings()
+    latest.update(
+        [
+            measurement("ph_probe", 5.4, "pH"),
+            measurement("ec_probe", 1150.0, "µS/cm"),
+            measurement("flow", 1.4, "L/min"),
+        ]
+    )
+    safety = SafetyGuard(tmp_path / "safety.json", config.dosing.limits)
+    controller = DosingController(
+        config, {"dosificador": FakePump("dosificador")}, latest, safety
+    )
+
+    decision = controller.plan(NOW, DosingFlags())
+
+    assert [action.pump_id for action in decision.actions] == ["dosificador"]
+
+
+def test_hourly_limit_blocks_dose_until_manual_reset(tmp_path: Path) -> None:
     controller, safety = build(
         tmp_path,
         latest=populated(ph=5.4),
@@ -270,9 +298,11 @@ def test_hourly_limit_blocks_dose(tmp_path: Path) -> None:
     decision = controller.plan(NOW, DosingFlags())
     assert decision.actions == []
     assert "1 dosis por hora" in decision.notices[0].message
+    assert safety.is_blocked(PH_DOWN)
+    assert safety.block_reason(PH_DOWN, 1.0, NOW + timedelta(hours=2)) is not None
 
 
-def test_daily_limit_blocks_dose(tmp_path: Path) -> None:
+def test_daily_limit_blocks_dose_until_manual_reset(tmp_path: Path) -> None:
     controller, safety = build(
         tmp_path,
         latest=populated(ph=5.4),
@@ -282,6 +312,7 @@ def test_daily_limit_blocks_dose(tmp_path: Path) -> None:
     decision = controller.plan(NOW, DosingFlags())
     assert decision.actions == []
     assert "límite diario" in decision.notices[0].message
+    assert safety.is_blocked(PH_DOWN)
 
 
 class ExplodingPump(FakePump):

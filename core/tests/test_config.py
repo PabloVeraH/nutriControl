@@ -137,6 +137,28 @@ def test_daily_limit_requires_peristaltic_pump() -> None:
         AppConfig.model_validate(raw)
 
 
+def test_daily_limit_must_be_positive() -> None:
+    raw = base_config_dict()
+    raw["dosing"]["limits"]["max_ml_per_day"] = {"pump_ph_down": 0}
+    with pytest.raises(Exception, match="finito y positivo"):
+        AppConfig.model_validate(raw)
+
+
+def test_duplicate_pump_roles_are_rejected() -> None:
+    raw = base_config_dict()
+    raw["outputs"][1]["role"] = "ph_down"
+    raw["outputs"].append(
+        {
+            "id": "pump_ph_down_2",
+            "type": "peristaltic",
+            "role": "ph_down",
+            "gpio": 5,
+        }
+    )
+    with pytest.raises(Exception, match="roles de bomba duplicados"):
+        AppConfig.model_validate(raw)
+
+
 def test_validator_rejects_invalid_low_when() -> None:
     raw = base_config_dict()
     raw["sensors"].append(

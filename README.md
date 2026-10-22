@@ -4,9 +4,10 @@ Sistema de control y monitoreo para un cultivo hidropónico NFT. El núcleo
 (`hidro-core`) lee sensores, publica en InfluxDB, evalúa reglas de alarma y
 dosificación, y avisa por Telegram. Grafana muestra el estado del cultivo.
 
-Estado actual: **Fase 0** verificada en simulación. Las fases 1 a 5 tienen el
-software y la verificación listos, pendientes del hardware y del acceso a la
-Pi.
+Estado actual: **Fase 0** verificada en simulación. Las fases 1 a 6 tienen el
+software y las pruebas listos. Las fases 1 a 5 esperan la validación física; la
+fase 6 espera la fuente de 12 V, la calibración real de la bomba y una semana de
+operación en `dry_run` antes de habilitar dosis reales.
 El detalle de lo hecho, lo verificado y los puntos de control está en
 [`PROGRESS.md`](PROGRESS.md). El diseño completo está en
 [`PLAN_IMPLEMENTACION.md`](PLAN_IMPLEMENTACION.md).
@@ -102,11 +103,12 @@ Dentro del contenedor (o con el paquete instalado en el host):
 | `hidro calibrate flow [--liters N]` | Calibra los pulsos por litro del flujómetro |
 | `hidro calibrate ph --point 6.86\|4.00 [--temperature T]` | Calibra el pH en dos puntos |
 | `hidro calibrate ec --standard 1413 [--temperature T]` | Calibra el factor k del TDS/EC |
+| `hidro calibrate pump [--id ID] [--seconds 60] [--ml N]` | Calibra el caudal de una bomba peristáltica |
 | `hidro interference` | Mide si el TDS encendido altera el pH |
 | `hidro switch <id> on\|off [--seconds N]` | Acciona un relé (por defecto 5 s) |
-| `hidro pump <id> --ml N [--yes]` | Dosifica con una bomba peristáltica |
+| `hidro pump <id> --ml N [--yes]` | Dosifica manualmente con una bomba calibrada |
 | `hidro alert-test` | Envía un mensaje de prueba a Telegram |
-| `hidro safety-reset [pump]` | Reinicia los bloqueos de seguridad |
+| `hidro safety reset [pump]` | Reinicia los bloqueos de seguridad de una bomba o de todas |
 | `hidro version` | Muestra la versión |
 | `hidro run` | Ciclo principal (lo usa el contenedor) |
 
@@ -117,8 +119,11 @@ docker compose -f compose.yaml -f compose.mock.yaml exec hidro-core hidro read
 docker compose -f compose.yaml -f compose.mock.yaml exec hidro-core hidro switch tds_power on
 ```
 
-`hidro pump` pide confirmación salvo que se use `--yes`. La dosificación está
-desactivada (`dosing.enabled: false`) y en `dry_run: true` hasta la Fase 6.
+`hidro pump` pide confirmación salvo que se use `--yes` y no pasa por las
+reglas 7.2 ni por los límites 7.3: úsalo solo para pruebas pequeñas después de
+calibrar. La dosificación automática queda habilitada pero en `dry_run: true`
+durante la Fase 6; las bombas no se mueven hasta cambiar ese valor con la
+aprobación explícita del punto de control.
 
 ## Configuración
 
@@ -127,7 +132,11 @@ Todo lo agronómico vive en `config/hidro.yaml`:
 - `read_interval_s`: período de lectura y publicación.
 - `sensors`: sondas DS18B20, HTU21D, flotador, flujómetro, pH y EC, con su
   calibración y parámetros de simulación (`mock`).
-- `outputs`: relé del TDS y bomba peristáltica.
+- `outputs`: relé del TDS y bombas peristálticas. Cada bomba puede declarar
+  `role: ph_down`, `ph_up`, `nutrient_a` o `nutrient_b`; si se omite, se usan
+  los ids convencionales (`pump_ph_down`, etc.). Las reglas toman el primer
+  sensor `ph_analog` y el primero `tds_analog`, sin depender de que se llamen
+  `ph` y `ec`.
 - `ranges`, `monitoring`: umbrales de alarma y tiempos sostenidos.
 - `dosing`: dosis, intervalos, límites y modo `dry_run`.
 - `alerts`: Telegram, repetición de críticas y resumen diario.
@@ -538,6 +547,106 @@ La calibración de pH se considera vencida a los 30 días. Una lectura de pH o E
 `suspect` (calibración vencida, anómala o ausente, o sin temperatura del agua)
 genera un aviso por Telegram y bloquea la dosificación hasta corregirla.
 
+### Fase 6: bomba peristáltica y dosificación
+
+**No conectes la bomba todavía si no tienes la fuente de 12 V y el circuito de
+potencia armado.** El relé de la Pi solo conmuta los contactos; no alimenta la
+bomba. Usa una fuente de 12 V para la bomba, un fusible y el canal 1 del módulo
+de relés (GPIO22, jumper en **High**):
+
+```text
++12 V -- fusible -- COM
+NO --------------- bomba +
+bomba - ---------- 0 V de la fuente de 12 V
+```
+
+Pon un diodo de recirculación entre los terminales de la bomba (cátodo al
+positivo) si el módulo o la bomba no lo traen. **Nunca lleves los 12 V a la
+Pi.** La entrada `IN` del relé sigue en GPIO22 y el módulo se alimenta con 5 V
+y GND de la Pi, como en la Fase 2. La carga va siempre entre `COM` y `NO`:
+`NC` queda cerrado con el relé en reposo.
+
+Antes de energizar, deja la entrada de la manguera en agua limpia y la salida
+en un recipiente graduado. **La bomba peristáltica no debe girar en seco.**
+
+#### Calibrar el caudal
+
+Detén el núcleo: el GPIO22 queda tomado por `hidro-core` y dos procesos no
+pueden abrirlo. La calibración enciende la bomba 60 s por defecto y la apaga
+siempre en un `finally`, incluso con Ctrl+C:
+
+```bash
+docker compose -f compose.yaml -f compose.hardware.yaml stop hidro-core
+docker compose -f compose.yaml -f compose.hardware.yaml run --rm --no-deps \
+  hidro-core calibrate pump --id pump_ph_down
+```
+
+El comando pide confirmación antes de encender, muestra el tiempo, apaga la
+bomba y pregunta cuántos mililitros se juntaron. Calcula
+`ml/min = ml × 60 / segundos`, avisa si el resultado se aleja mucho de la
+referencia anterior y guarda el valor en `/data/calibration.yaml`. Para una
+prueba más corta usa `--seconds 30`; para automatizar una repetición ya medida,
+`--ml N --yes`. No se aceptan tiempos fuera de `0–120 s` ni volúmenes no
+finitos o no positivos.
+
+La calibración guardada manda sobre `ml_per_min` del YAML. Reinicia el núcleo
+para que el registro de drivers la cargue:
+
+```bash
+docker compose -f compose.yaml -f compose.hardware.yaml up -d hidro-core
+```
+
+Si la bomba no tiene `role: ph_down` en `config/hidro.yaml`, las reglas usan el
+id convencional `pump_ph_down`; también puedes declarar el rol explícitamente
+y cambiar el id sin tocar el código. Los sensores de pH y EC se toman por tipo,
+así que sus ids pueden ser otros.
+
+#### Semana en dry_run y límites
+
+`config/hidro.yaml` deja `dosing.enabled: true` y `dosing.dry_run: true` para
+la Fase 6. En este modo el núcleo evalúa las reglas 7.2 cada
+`check_interval_s`, escribe en el log y envía a Telegram lo que *habría* hecho,
+pero no activa ninguna bomba. Revisa durante una semana:
+
+```bash
+docker compose -f compose.yaml -f compose.hardware.yaml logs -f hidro-core
+```
+
+Los avisos de simulación deben decir `SIMULACIÓN` y las dosis, motivos y
+segundos deben ser coherentes. Si falta una bomba, no está calibrada o la dosis
+supera `max_on_s`, el aviso lo indica y no se simula una acción.
+
+Los límites 7.3 son por bomba y persistentes entre reinicios: por defecto 3
+dosis por hora y 20 ml/día para `pump_ph_down`. Al alcanzar un límite, o si una
+dosis falla, la bomba queda bloqueada y hay que revisar el cultivo antes de
+reanudar:
+
+```bash
+hidro safety reset pump_ph_down   # solo esa bomba
+hidro safety reset                # todas las bombas
+```
+
+Reiniciar una bomba no borra los límites de las demás. El nombre anterior
+`hidro safety-reset` sigue funcionando. No reinicies el bloqueo para “seguir
+probando”: primero corrige la causa.
+
+#### Punto de control humano
+
+La fase no se cierra hasta completar y registrar:
+
+1. Fuente de 12 V, fusible, diodo y bomba conectados sin llevar 12 V a la Pi.
+2. Bomba cebada, sin aire, y calibración de 60 s guardada; una segunda medición
+   queda dentro de una variación razonable.
+3. Semana en `dry_run` con decisiones y avisos revisados en Telegram.
+4. Prueba de parada: `docker compose stop hidro-core` y Ctrl+C en una dosis
+   dejan la bomba apagada.
+5. Límite alcanzado y `hidro safety reset` verificados.
+6. Aprobación explícita del usuario antes de poner `dry_run: false` y hacer la
+   primera dosis real, empezando por un volumen pequeño.
+
+`hidro pump <id> --ml N` es una dosificación manual que no pasa por las reglas
+ni por los límites; úsala solo con la bomba calibrada y con confirmación.
+
 ## Operación
 
 - Reinicio automático: `restart: unless-stopped` en los tres servicios.
@@ -564,7 +673,7 @@ genera un aviso por Telegram y bloquea la dosificación hasta corregirla.
 | Grafana reinicia y no arranca | Faltan las alertas generadas o el token; ejecuta `scripts/render_grafana_alerting.py` |
 | Grafana dice "sin datos" | El núcleo no publica: revisa `docker compose logs hidro-core` y el latido |
 | La dosificación no actúa | `dosing.enabled`/`dry_run`, bloqueo de seguridad o falta calibrar `ml_per_min` |
-| Bomba bloqueada tras un fallo | Corrige la causa y ejecuta `hidro safety-reset` |
+| Bomba bloqueada tras un fallo o un límite | Corrige la causa, revisa el cultivo y ejecuta `hidro safety reset [pump]` |
 | `Permission denied` en `/dev` | GIDs incorrectos en `.env` o falta `group_add` (usa `compose.hardware.yaml`) |
 | DS18B20 marca 85 °C | Sonda desconectada, mal cableada o serial equivocado |
 | El pH o el EC no cuadran | Calibrar en la Fase 5; el TDS se enciende después de medir el pH |

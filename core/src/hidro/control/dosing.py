@@ -6,7 +6,15 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from hidro.alerts.manager import Severity
-from hidro.config import AppConfig, FloatSwitchConfig, FlowHallConfig
+from hidro.config import (
+    AppConfig,
+    FloatSwitchConfig,
+    FlowHallConfig,
+    PeristalticConfig,
+    PHAnalogConfig,
+    PumpRole,
+    TDSAnalogConfig,
+)
 from hidro.control.safety import SafetyGuard
 from hidro.drivers.base import DoseTooLong, LatestReadings, PumpNotCalibrated, Switch
 from hidro.logging_setup import get_logger
@@ -17,6 +25,11 @@ PH_DOWN = "pump_ph_down"
 PH_UP = "pump_ph_up"
 NUTRIENT_A = "pump_nutrient_a"
 NUTRIENT_B = "pump_nutrient_b"
+
+PH_DOWN_ROLE: PumpRole = "ph_down"
+PH_UP_ROLE: PumpRole = "ph_up"
+NUTRIENT_A_ROLE: PumpRole = "nutrient_a"
+NUTRIENT_B_ROLE: PumpRole = "nutrient_b"
 
 
 @dataclass(frozen=True)
@@ -64,6 +77,19 @@ class DosingController:
         self.safety = safety
         self.last_dose_at: datetime | None = None
         self._notice_keys: set[str] = set()
+        self._pumps_by_role = {
+            output.role: output.id
+            for output in config.outputs
+            if isinstance(output, PeristalticConfig) and output.role is not None
+        }
+        self._ph_sensor = next(
+            (sensor.id for sensor in config.sensors if isinstance(sensor, PHAnalogConfig)),
+            None,
+        )
+        self._ec_sensor = next(
+            (sensor.id for sensor in config.sensors if isinstance(sensor, TDSAnalogConfig)),
+            None,
+        )
 
     # ------------------------------------------------------------------ plan
 
@@ -93,8 +119,8 @@ class DosingController:
             ):
                 decision.blocked.append(f"sin lectura reciente del flotador ({sensor.id})")
 
-        ph = self._fresh_value("ph", now, max_age)
-        ec = self._fresh_value("ec", now, max_age)
+        ph = self._fresh_value(self._ph_sensor, now, max_age) if self._ph_sensor else None
+        ec = self._fresh_value(self._ec_sensor, now, max_age) if self._ec_sensor else None
         if ph is None or ec is None:
             decision.blocked.append("sin lecturas recientes de pH/EC")
             notice(
@@ -119,17 +145,49 @@ class DosingController:
 
         if flags.ph_danger or ph < self.config.ranges.ph.danger_low or ph > self.config.ranges.ph.danger_high:
             if ph < self.config.ranges.ph.danger_low:
-                self._add_ph_action(decision, notices, PH_DOWN, self.dosing.ph_down_ml, ph, now, "pH bajo")
+                self._add_ph_action(
+                    decision,
+                    notices,
+                    self._pump_id(PH_DOWN_ROLE, PH_DOWN),
+                    self.dosing.ph_down_ml,
+                    ph,
+                    now,
+                    "pH bajo",
+                )
             else:
-                self._add_ph_action(decision, notices, PH_UP, self.dosing.ph_up_ml, ph, now, "pH alto")
+                self._add_ph_action(
+                    decision,
+                    notices,
+                    self._pump_id(PH_UP_ROLE, PH_UP),
+                    self.dosing.ph_up_ml,
+                    ph,
+                    now,
+                    "pH alto",
+                )
         elif ec < self.config.ranges.ec.low:
             self._add_nutrient_actions(decision, notices, ec, now)
         elif ec > self.config.ranges.ec.high:
             decision.blocked.append("EC sobre el máximo: diluir con agua")
         elif ph < self.config.ranges.ph.low:
-            self._add_ph_action(decision, notices, PH_DOWN, self.dosing.ph_down_ml, ph, now, "pH bajo")
+            self._add_ph_action(
+                decision,
+                notices,
+                self._pump_id(PH_DOWN_ROLE, PH_DOWN),
+                self.dosing.ph_down_ml,
+                ph,
+                now,
+                "pH bajo",
+            )
         elif ph > self.config.ranges.ph.high:
-            self._add_ph_action(decision, notices, PH_UP, self.dosing.ph_up_ml, ph, now, "pH alto")
+            self._add_ph_action(
+                decision,
+                notices,
+                self._pump_id(PH_UP_ROLE, PH_UP),
+                self.dosing.ph_up_ml,
+                ph,
+                now,
+                "pH alto",
+            )
 
         self._finish(decision, notices)
         return decision
@@ -156,7 +214,10 @@ class DosingController:
         ec: float,
         now: datetime,
     ) -> None:
-        pumps = [NUTRIENT_A, NUTRIENT_B]
+        pumps = [
+            self._pump_id(NUTRIENT_A_ROLE, NUTRIENT_A),
+            self._pump_id(NUTRIENT_B_ROLE, NUTRIENT_B),
+        ]
         available = [pump_id for pump_id in pumps if pump_id in self.outputs]
         if len(available) < 2:
             notices["dosing-nutrients"] = DosingNotice(
@@ -228,13 +289,16 @@ class DosingController:
 
         safety_reason = self.safety.block_reason(pump_id, ml, now)
         if safety_reason is not None:
+            # Un límite alcanzado deja la bomba bloqueada hasta que una persona
+            # revise el cultivo y ejecute `hidro safety reset`.
+            self.safety.block(pump_id, safety_reason)
             key = f"safety-{pump_id}"
             notices[key] = DosingNotice(
                 key,
                 True,
                 Severity.HIGH,
                 f"Bomba '{pump_id}' bloqueada por seguridad: {safety_reason}. "
-                "Revisar y ejecutar 'hidro safety-reset'.",
+                "Revisar y ejecutar 'hidro safety reset'.",
             )
             return
 
@@ -244,7 +308,15 @@ class DosingController:
 
     # ------------------------------------------------------------------ utilidades
 
-    def _fresh_value(self, name: str, now: datetime, max_age_s: float) -> float | None:
+    def _pump_id(self, role: PumpRole, fallback: str) -> str:
+        """Id configurado para un rol; los ids convencionales siguen sirviendo."""
+        return self._pumps_by_role.get(role, fallback)
+
+    def _fresh_value(
+        self, name: str | None, now: datetime, max_age_s: float
+    ) -> float | None:
+        if name is None:
+            return None
         measurement = self.latest.get(name)
         # Plan 7.2: también bloquea "suspect" (EC sin calibrar, pH sin temperatura).
         if measurement is None or measurement.quality != "ok":
