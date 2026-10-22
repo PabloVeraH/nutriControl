@@ -133,17 +133,20 @@ fi
 
 section "3/3 Robustez al detener el contenedor"
 echo "SIGTERM: hidro-core debe apagar todas las salidas antes de salir."
+echo "El relé $OUTPUT_ID se energiza unos 2 s en cada ciclo (cada 30 s)."
+echo "Detén el contenedor justo cuando escuches el clic para probar con el relé activo."
 core_up
 if ! wait_healthy; then
   problem "hidro-core no llegó a healthy"
 else
-  read -r -p "Enter para ejecutar 'docker compose stop hidro-core'... " _
+  read -r -p "Cuando escuches el clic, pulsa Enter para ejecutar 'docker compose stop'... " _
   "${COMPOSE[@]}" stop hidro-core >/dev/null 2>&1 || true
+  sleep 2
   "${COMPOSE[@]}" logs --tail 6 hidro-core 2>&1 | sed 's/^/  /'
-  if ask_yes "¿El relé quedó apagado?"; then
+  if ask_yes "¿Estaba encendido al detener y quedó apagado?"; then
     echo "  [ok] apagado limpio con SIGTERM."
   else
-    problem "el relé no se apagó con SIGTERM"
+    problem "el relé no se apagó con SIGTERM o la prueba se hizo con el relé ya apagado"
   fi
 fi
 
@@ -155,9 +158,9 @@ if ! wait_healthy; then
   problem "hidro-core no llegó a healthy para la prueba de SIGKILL"
 else
   echo "Espera a escuchar el clic del relé y pulsa Enter de inmediato."
-  read -r -p "Enter para ejecutar 'docker compose kill hidro-core'... " _
+  read -r -p "Cuando escuches el clic, pulsa Enter para ejecutar 'docker compose kill'... " _
   "${COMPOSE[@]}" kill hidro-core >/dev/null 2>&1 || true
-  if ask_yes "¿El relé quedó apagado o en un estado seguro?"; then
+  if ask_yes "¿Estaba encendido al matar y quedó apagado o en un estado seguro?"; then
     echo "  [ok] el módulo no queda activo al liberar el GPIO."
   else
     problem "el relé queda activo o indeterminado tras SIGKILL"

@@ -213,7 +213,7 @@ la prueba física.
 
 ### Publicación
 
-- Rama `fase-2`, commit `4e0d333`, publicada en `origin/fase-2`.
+- Rama `fase-2`, commits `4e0d333` y posteriores, publicada en `origin/fase-2`.
 
 ## Fase 3 — Flujómetro
 

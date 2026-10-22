@@ -325,7 +325,8 @@ bash scripts/phase2_check.sh
 Pide confirmar que no hay cargas, detiene y restaura `hidro-core`, comprueba el
 flotador, acciona `tds_power` y guía las pruebas de robustez:
 
-- **SIGTERM:** `docker compose stop hidro-core` debe apagar todas las salidas.
+- **SIGTERM:** `docker compose stop hidro-core` con `tds_power` energizado debe
+  apagar todas las salidas.
 - **SIGKILL:** `docker compose kill hidro-core` mientras `tds_power` está
   energizado. Si el relé queda activo o indeterminado, hay que añadir una
   resistencia pull-down en la entrada del módulo o usar el contacto NC antes de
