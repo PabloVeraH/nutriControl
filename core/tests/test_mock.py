@@ -66,7 +66,9 @@ def test_mock_htu21d_reports_vpd_and_dew_point() -> None:
     sensor.close()
 
     broken = MockHTU21DSensor("air", MockHTU21DParams(scenario="disconnected"))
-    assert [item.quality for item in broken.read()] == ["invalid", "invalid"]
+    readings = broken.read()
+    assert [item.quality for item in readings] == ["invalid"] * 4
+    assert {item.name for item in readings} == {"air_temp", "air_humidity", "air_vpd", "air_dew_point"}
 
 
 def test_mock_float_switch_sequences() -> None:

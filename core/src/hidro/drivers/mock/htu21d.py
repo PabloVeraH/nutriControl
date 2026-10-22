@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 
 from hidro.calc import dew_point_c, vpd_kpa
 from hidro.config import MockHTU21DParams
-from hidro.drivers.base import invalid_measurement
+from hidro.drivers.htu21d import invalid_air_measurements
 from hidro.drivers.mock.common import gaussian, is_invalid
 from hidro.model import Measurement
 
@@ -21,10 +21,7 @@ class MockHTU21DSensor:
     def read(self) -> list[Measurement]:
         now = datetime.now(UTC)
         if is_invalid(self.params.scenario):
-            return [
-                invalid_measurement(f"{self.id}_temp", "°C", self.id, now),
-                invalid_measurement(f"{self.id}_humidity", "%", self.id, now),
-            ]
+            return invalid_air_measurements(self.id, now)
         temp = self.params.temp_c + gaussian(self._rng, self.params.noise)
         humidity = max(0.0, min(100.0, self.params.humidity + gaussian(self._rng, self.params.noise)))
         return [
