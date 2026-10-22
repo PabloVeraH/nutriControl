@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import time
-from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -40,7 +38,6 @@ class PHAnalogSensor:
         self.samples = samples
         self.temperature_from = temperature_from
         self.temperature_max_age_s = temperature_max_age_s
-        self._sleep = time.sleep
 
     def _water_temperature(self) -> float | None:
         if not self.temperature_from:
@@ -99,46 +96,3 @@ class PHAnalogSensor:
 
     def close(self) -> None:
         return None
-
-
-def voltage_slope(v1: float, ph1: float, v2: float, ph2: float) -> float:
-    """Pendiente en V/pH para dos puntos de calibración."""
-    if abs(ph1 - ph2) < 1e-9:
-        raise ValueError("los puntos de calibración deben tener pH distinto")
-    return (v1 - v2) / (ph1 - ph2)
-
-
-def voltage_at_ph7(v1: float, ph1: float, slope: float) -> float:
-    return v1 + slope * (7.0 - ph1)
-
-
-def ph_from_voltage(voltage: float, v7: float, slope: float) -> float:
-    if abs(slope) < 1e-9:
-        raise ValueError("pendiente de calibración nula")
-    return 7.0 + (voltage - v7) / slope
-
-
-def calibrate_two_points(
-    point_a: tuple[float, float],
-    point_b: tuple[float, float],
-    temperature_c: float,
-) -> dict[str, float]:
-    """Calcula pendiente, V7 y el voltaje esperado en pH 7."""
-    v1, ph1 = point_a
-    v2, ph2 = point_b
-    slope = voltage_slope(v1, ph1, v2, ph2)
-    return {
-        "slope": slope,
-        "v7": voltage_at_ph7(v1, ph1, slope),
-        "temperature_c": temperature_c,
-    }
-
-
-def mean_sample(samples: list[float]) -> float:
-    if not samples:
-        raise ValueError("sin muestras")
-    return sum(samples) / len(samples)
-
-
-def sleep_s(seconds: float) -> Callable[[], None]:
-    return lambda: time.sleep(seconds)

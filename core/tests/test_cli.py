@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import signal
 from argparse import Namespace
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,6 +11,7 @@ from conftest import FakePump, FakeSwitch, make_config
 
 from hidro import cli
 from hidro.calibration import CalibrationStore
+from hidro.config import AppConfig
 from hidro.drivers.base import DriverError
 
 
@@ -661,3 +663,224 @@ def test_parser_accepts_calibrate_ec() -> None:
     assert args.func is cli.cmd_calibrate_ec
     assert args.sensor == "ec"
     assert args.standard == 1413.0
+
+
+def capture_stability(monkeypatch: pytest.MonkeyPatch, voltages: list[float]) -> list[dict]:
+    """Reemplaza la lectura estable: devuelve `voltages` en orden y guarda los parámetros."""
+    calls: list[dict] = []
+    pending = iter(voltages)
+
+    def fake(_reader: object, **kwargs: object) -> float:
+        calls.append(kwargs)
+        return next(pending)
+
+    monkeypatch.setattr(cli, "read_stable_voltage", fake)
+    return calls
+
+
+def test_calibrate_ph_holds_tds_power_off(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    runtime = FakeCalibrationRuntime()
+    install_calibration(
+        monkeypatch, tmp_path, config=make_config(mode="hardware"), runtime=runtime, voltage=2.0
+    )
+    confirm_prompts(monkeypatch)
+
+    assert cli.cmd_calibrate_ph(Namespace(id=None, point=6.86, temperature=25.0)) == 0
+
+    # tds_power (GPIO23) se toma apagado durante la lectura y queda apagado.
+    assert runtime.gpio_calls == [(23, True, False)]
+    assert runtime.device.value is False
+    assert "on" not in runtime.device.events
+
+
+def test_calibrate_ph_uses_strict_stability_and_knob(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    install_calibration(
+        monkeypatch,
+        tmp_path,
+        config=make_config(mode="hardware"),
+        runtime=FakeCalibrationRuntime(),
+        voltage=2.0,
+    )
+    calls = capture_stability(monkeypatch, [2.0, 2.0])
+    confirm_prompts(monkeypatch)
+
+    cli.cmd_calibrate_ph(Namespace(id=None, point=6.86, temperature=25.0))
+    cli.cmd_calibrate_ph(Namespace(id=None, point=6.86, temperature=25.0, tolerance_mv=5.0))
+
+    assert calls[0]["tolerance_v"] == pytest.approx(0.002)
+    assert calls[0]["window"] * calls[0]["interval_s"] == pytest.approx(10.0)
+    assert calls[1]["tolerance_v"] == pytest.approx(0.005)
+
+
+def test_calibrate_ec_uses_its_own_tolerance(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    install_calibration(
+        monkeypatch,
+        tmp_path,
+        config=make_config(mode="hardware"),
+        runtime=FakeCalibrationRuntime(),
+        voltage=1.0,
+    )
+    calls = capture_stability(monkeypatch, [1.0])
+    monkeypatch.setattr(cli.time, "sleep", lambda _s: None)
+    confirm_prompts(monkeypatch)
+
+    cli.cmd_calibrate_ec(Namespace(id=None, standard=1413.0, temperature=25.0))
+
+    assert calls[0]["tolerance_v"] == pytest.approx(0.005)
+
+
+def test_calibrate_ph_old_pending_point_can_restart(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    store = CalibrationStore(tmp_path / "calibration.yaml")
+    old = store.set_ph_pending(6.86, 2.0, 25.0)
+    later = old.measured_at + timedelta(hours=3)
+    monkeypatch.setattr(cli, "datetime", SimpleNamespace(now=lambda tz=None: later))
+    install_calibration(
+        monkeypatch,
+        tmp_path,
+        config=make_config(mode="hardware"),
+        runtime=FakeCalibrationRuntime(),
+        voltage=2.4,
+    )
+    confirm_prompts(monkeypatch)  # "¿Combinarlo igual...?" -> no
+
+    assert cli.cmd_calibrate_ph(Namespace(id=None, point=4.0, temperature=25.0)) == 0
+
+    pending = store.ph_pending()
+    assert store.ph() is None
+    assert pending is not None
+    assert pending.ph == pytest.approx(4.0)
+    assert "3.0 h" in capsys.readouterr().out
+
+
+def test_calibrate_ph_positive_slope_requires_confirmation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    store = CalibrationStore(tmp_path / "calibration.yaml")
+    store.set_ph_pending(6.86, 2.4, 25.0)  # voltajes intercambiados: pendiente positiva
+    install_calibration(
+        monkeypatch,
+        tmp_path,
+        config=make_config(mode="hardware"),
+        runtime=FakeCalibrationRuntime(),
+        voltage=2.0,
+    )
+
+    def decline_override(prompt: str = "") -> str:
+        return "" if "de todos modos" in prompt else "s"
+
+    monkeypatch.setattr("builtins.input", decline_override)
+
+    assert cli.cmd_calibrate_ph(Namespace(id=None, point=4.0, temperature=25.0)) == 1
+
+    assert store.ph() is None
+    assert store.ph_pending() is not None
+    assert "pendiente es positiva" in capsys.readouterr().err
+
+
+def test_calibrate_ph_defaults_to_probe_temperature(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    install_calibration(
+        monkeypatch,
+        tmp_path,
+        config=make_config(mode="hardware"),
+        runtime=FakeCalibrationRuntime(),
+        voltage=2.0,
+    )
+    monkeypatch.setattr(cli, "_probe_temperature", lambda _config, _sensor_id: 18.3)
+    confirm_prompts(monkeypatch)  # Enter acepta la temperatura propuesta
+
+    assert cli.cmd_calibrate_ph(Namespace(id=None, point=6.86, temperature=None)) == 0
+
+    pending = CalibrationStore(tmp_path / "calibration.yaml").ph_pending()
+    assert pending is not None
+    assert pending.t_c == pytest.approx(18.3)
+
+
+def test_probe_temperature_reads_the_ds18b20(tmp_path: Path) -> None:
+    device = tmp_path / "28-abc"
+    device.mkdir()
+    (device / "w1_slave").write_text(
+        "72 01 4b 46 7f ff 0e 10 57 : crc=57 YES\n72 01 4b 46 7f ff 0e 10 57 t=18312\n",
+        encoding="utf-8",
+    )
+    config = AppConfig.model_validate(
+        {
+            "mode": "hardware",
+            "sensors": [
+                {
+                    "id": "water_temp_1",
+                    "type": "ds18b20",
+                    "serial": "28-abc",
+                    "base_path": str(tmp_path),
+                }
+            ],
+        }
+    )
+    assert cli._probe_temperature(config, "water_temp_1") == pytest.approx(18.312)
+    assert cli._probe_temperature(config, None) is None
+    (device / "w1_slave").unlink()
+    assert cli._probe_temperature(config, "water_temp_1") is None
+
+
+@pytest.mark.parametrize(
+    ("on_voltage", "verdict"), [(2.020, "Hay interferencia"), (2.001, "No se aprecia")]
+)
+def test_interference_compares_ph_with_tds_off_and_on(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    on_voltage: float,
+    verdict: str,
+) -> None:
+    runtime = FakeCalibrationRuntime()
+    install_calibration(
+        monkeypatch, tmp_path, config=make_config(mode="hardware"), runtime=runtime, voltage=0.0
+    )
+    capture_stability(monkeypatch, [2.0, on_voltage])
+    monkeypatch.setattr(cli.time, "sleep", lambda _s: None)
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "")
+
+    assert cli.cmd_interference(Namespace(tolerance_mv=None)) == 0
+
+    events = runtime.device.events
+    assert events.count("on") == 1
+    assert "off" in events[events.index("on") :]
+    assert runtime.device.value is False
+    assert verdict in capsys.readouterr().out
+
+
+def test_interference_turns_tds_off_when_reading_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    runtime = FakeCalibrationRuntime()
+    install_calibration(
+        monkeypatch, tmp_path, config=make_config(mode="hardware"), runtime=runtime, voltage=0.0
+    )
+    readings = iter([2.0])
+
+    def fail_second(_reader: object, **_kwargs: object) -> float:
+        value = next(readings, None)
+        if value is None:
+            raise DriverError("el voltaje no se estabilizó")
+        return value
+
+    monkeypatch.setattr(cli, "read_stable_voltage", fail_second)
+    monkeypatch.setattr(cli.time, "sleep", lambda _s: None)
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "")
+
+    with pytest.raises(DriverError):
+        cli.cmd_interference(Namespace(tolerance_mv=None))
+
+    assert runtime.device.value is False
+    assert runtime.closed
+
+
+def test_parser_accepts_interference() -> None:
+    args = cli.build_parser().parse_args(["interference", "--tolerance-mv", "3"])
+    assert args.func is cli.cmd_interference
+    assert args.tolerance_mv == 3.0

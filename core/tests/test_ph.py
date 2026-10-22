@@ -9,10 +9,6 @@ from hidro.calibration import CalibrationStore
 from hidro.drivers.base import LatestReadings
 from hidro.drivers.ph_analog import (
     PHAnalogSensor,
-    calibrate_two_points,
-    ph_from_voltage,
-    voltage_at_ph7,
-    voltage_slope,
 )
 from hidro.model import Measurement
 
@@ -30,21 +26,6 @@ class FakeADC:
 
             raise DriverError("i2c roto")
         return self.voltage
-
-
-def test_two_point_helpers() -> None:
-    slope = voltage_slope(2.0, 6.86, 2.4, 4.0)
-    v7 = voltage_at_ph7(2.0, 6.86, slope)
-    assert ph_from_voltage(v7, v7, slope) == pytest.approx(7.0)
-    assert ph_from_voltage(2.0, v7, slope) == pytest.approx(6.86)
-    result = calibrate_two_points((2.0, 6.86), (2.4, 4.0), 22.0)
-    assert result["slope"] == pytest.approx(slope)
-    assert result["v7"] == pytest.approx(v7)
-    assert result["temperature_c"] == 22.0
-    with pytest.raises(ValueError):
-        voltage_slope(1.0, 7.0, 1.0, 7.0)
-    with pytest.raises(ValueError):
-        ph_from_voltage(1.0, 1.0, 0.0)
 
 
 def _store_with_ph(tmp_path: Path) -> CalibrationStore:
