@@ -27,6 +27,8 @@ dev = [
     "pytest-cov>=5.0",
     "ruff>=0.6",
     "mypy>=1.11",
+    # Sin lgpio: las pruebas usan MockFactory para validar la API real de gpiozero.
+    "gpiozero>=2.0",
 ]
 
 [project.scripts]

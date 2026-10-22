@@ -7,10 +7,10 @@ siguiente fase sin cerrar el punto de control humano correspondiente.
 
 | Fase | Estado | Rama |
 | --- | --- | --- |
-| 0 — Esqueleto en el PC (mock) | Implementada; falta confirmación de Telegram | `fase-0` |
-| 1 — Raspberry + sondas de temperatura | Pendiente (sin hardware) | — |
-| 2 — Flotador y relés | Pendiente | — |
-| 3 — Flujómetro | Pendiente | — |
+| 0 — Esqueleto en el PC (mock) | Implementada y verificada; checkpoint de Telegram pendiente | `fase-0` |
+| 1 — Raspberry + sondas de temperatura | En curso; software y documentación listos, validación física pendiente | `fase-1` |
+| 2 — Flotador y relés | En curso; drivers, CLI y verificación listos, validación física pendiente | `fase-2` |
+| 3 — Flujómetro | En curso; driver y calibración listos, validación física pendiente | `fase-3` |
 | 4 — Aire (HTU21D) | Pendiente | — |
 | 5 — pH y TDS (ADS1115) | Pendiente | — |
 | 6 — Bomba y dosificación | Pendiente | — |
@@ -53,7 +53,7 @@ siguiente fase sin cerrar el punto de control humano correspondiente.
 | `ruff check src tests` | Sin hallazgos |
 | `mypy src` | Sin errores |
 | `docker compose ... up -d --build` | 3 contenedores levantan; núcleo `healthy` |
-| Mediaciones en InfluxDB | `air_temp`, `air_humidity`, `air_dew_point`, `air_vpd`, `water_temp_1`, `water_temp_2`, `ph`, `ec`, `ec_ppm`, `flow`, `tank_level_low`, `heartbeat` |
+| Mediciones en InfluxDB | `air_temp`, `air_humidity`, `air_dew_point`, `air_vpd`, `water_temp_1`, `water_temp_2`, `ph`, `ec`, `ec_ppm`, `flow`, `tank_level_low`, `heartbeat` |
 | Latido | Punto `heartbeat` con `mode=mock` y ciclo creciente cada 30 s |
 | Dashboard Grafana | `uid=hidro` aprovisionado y visible en el puerto 3300 |
 | Datasource Grafana | `OK`, 3 buckets detectados |
@@ -64,7 +64,17 @@ Grafana (ahora se montan los subdirectorios), el tipado del `chatid` de
 Telegram (se genera el YAML con comillas) y el arranque de Grafana sin token
 (las alertas son un override opcional).
 
+### Publicación
+
+- Rama `fase-0`, commit `a31c9a2` (`feat(fase-0): esqueleto del sistema NFT en
+  modo simulado`), publicado en `origin/fase-0`.
+- `main` todavía no existe: se creará al cerrar el checkpoint.
+
 ### Punto de control humano (pendiente)
+
+Estado al 2026-10-22: `TELEGRAM_BOT_TOKEN` y `TELEGRAM_CHAT_ID` siguen vacíos;
+no se ha confirmado la recepción de una alerta real. El resto de la Fase 0 está
+verificado.
 
 1. Crear el bot con @BotFather y obtener `TELEGRAM_BOT_TOKEN`.
 2. Obtener `TELEGRAM_CHAT_ID`.
@@ -86,25 +96,219 @@ Telegram (se genera el YAML con comillas) y el arranque de Grafana sin token
   evitar que Grafana interprete el chat id como número.
 - `docs/` no se versiona.
 
-### Pendiente antes de la Fase 1
+### Pendiente para cerrar la Fase 0
 
-- Confirmar la preparación de la Pi: Docker, grupos `gpio`/`i2c`, I2C y 1-Wire
-  activados, GIDs en `.env`.
-- Obtener los seriales `28-…` de las dos sondas DS18B20.
-- Copiar `.env` a la Pi y verificar credenciales de git para el repositorio
-  privado.
+- Confirmar el checkpoint de Telegram (token, chat id y mensaje de prueba).
 
 ## Fase 1 — Raspberry + sondas de temperatura
 
-Pendiente de hardware.
+**Estado:** en curso. Código, documentación y diagnóstico listos; la validación
+física requiere acceso SSH a la Pi y las sondas conectadas.
+**Rama:** `fase-1` · **Fecha:** 2026-10-22
 
-## Fase 2 — Flotador y relés
+### Hecho
 
-Pendiente de hardware.
+- Driver real `ds18b20`: lee `w1_slave`, valida CRC, aplica offset y descarta
+  lecturas de 85 °C. Probado con un árbol sysfs falso para lectura válida,
+  offset, CRC inválida, 85 °C, trama incompleta, dispositivo ausente y serial
+  vacío.
+- `compose.hardware.yaml` fuerza `HIDRO_HARDWARE=hardware`, expone
+  `/dev/i2c-1` y `/dev/gpiochip0`, monta `/sys` en solo lectura y aplica
+  `GPIO_GID`/`I2C_GID`.
+- README con la preparación del host, el `.env` de la Pi, el despliegue y la
+  secuencia de las sondas.
+- `scripts/pi_check.sh`: diagnóstico sin efectos secundarios (modelo, RAM,
+  disco, Docker, grupos, GIDs declarados frente a reales, dispositivos,
+  overlays de I2C/1-Wire, sondas con temperatura, `i2cdetect`, puerto 3300).
+- `deploy.sh` permite desplegar sin alertas mientras Telegram no esté
+  configurado; `DEPLOY_REQUIRE_ALERTS=1` las exige.
+
+### Bloqueos
+
+- El acceso SSH no interactivo a la Pi responde
+  `Permission denied (publickey,password)`; falta instalar la clave pública del
+  PC (`ssh-copy-id`).
+- `GPIO_GID` e `I2C_GID` del `.env` son provisionales (997/998); hay que
+  reemplazarlos por los valores reales de la Pi.
+- No hay sondas DS18B20 conectadas; faltan los seriales `28-…`.
+- Por lo anterior no se ejecutó el primer despliegue ni `pi_check.sh` en la Pi.
+
+### Tareas
+
+- [x] Driver real y pruebas.
+- [x] Preparación del host documentada.
+- [x] Diagnóstico automatizado.
+- [x] Despliegue sin alertas permitido.
+- [ ] Instalar la clave SSH del PC en la Pi.
+- [ ] Ejecutar `bash scripts/pi_check.sh` y corregir fallas.
+- [ ] Copiar `.env` a la Pi y ajustar los GIDs.
+- [ ] Primer despliegue con `./deploy.sh`.
+- [ ] Conectar las sondas, anotar los seriales y actualizar `config/hidro.yaml`.
+- [ ] Verificar la temperatura desde el contenedor y en Grafana.
+
+### Punto de control humano
+
+1. `bash scripts/pi_check.sh` termina sin fallas.
+2. Los tres servicios quedan `healthy` tras el despliegue.
+3. `hidro read` muestra las dos temperaturas de agua con `quality=ok`.
+4. Al calentar una sonda con la mano, la temperatura sube en Grafana.
+5. El usuario confirma los seriales usados en `config/hidro.yaml`.
+
+Los comandos concretos están en el README, sección
+"Despliegue en la Raspberry Pi".
+
+### Publicación
+
+- Rama `fase-1`, commits `09459e9`, `457e522` y `44b4bc8`, publicada en
+  `origin/fase-1`.
+
+## Fase 2 — Flotador y relés (sin carga)
+
+**Estado:** en curso. Drivers, CLI y verificación listos; falta el cableado y
+la prueba física.
+**Rama:** `fase-2` · **Fecha:** 2026-10-22
+
+### Hecho
+
+- `float_switch`: antirrebote configurable y detección de nivel bajo según
+  `low_when`; pruebas de estado inicial, debounce y rebote.
+- `relay`: salida on/off con `active_high`, sin estado residual al cerrar;
+  pruebas de delegación y propagación de errores.
+- CLI `hidro switch <id> on|off [--seconds N]`, con apagado garantizado al
+  terminar o interrumpir; pruebas de encendido, apagado, interrupción, bomba
+  rechazada y salida inexistente.
+- Apagado ordenado con `SIGTERM`/`SIGINT`: todas las salidas se apagan antes de
+  cerrar. Se agregaron pruebas de `_shutdown` (todas las salidas apagadas y
+  tolerancia a fallos de una salida).
+- `scripts/phase2_check.sh`: guía el flotador, el relé `tds_power` y las pruebas
+  de `SIGTERM`/`SIGKILL`, deteniendo y restaurando `hidro-core`.
+- README con el cableado, `low_when`, exclusividad de GPIO, prueba del canal 1
+  con `pinctrl` y mitigaciones de robustez.
+- El CLI rechaza las bombas peristálticas en `switch`; el canal 1 se valida con
+  `pinctrl` o en la Fase 6.
+
+### Bloqueos
+
+- Persisten el acceso SSH sin clave y la falta de hardware de las fases 1 y 2.
+- No se ejecutó `scripts/phase2_check.sh` ni la prueba física de stop/kill.
+
+### Tareas
+
+- [x] Drivers y pruebas.
+- [x] CLI `hidro switch`.
+- [x] Apagado ordenado y pruebas.
+- [x] Verificación asistida.
+- [ ] Cablear flotador y módulo de relés sin carga.
+- [ ] Confirmar `low_when` con el flotador.
+- [ ] Confirmar el clic de `tds_power` y del canal 1.
+- [ ] Ejecutar stop/kill y registrar el estado del relé.
+- [ ] Definir la mitigación si el relé queda activo tras `SIGKILL`.
+
+### Punto de control humano
+
+1. `tank_level_low` cambia al mover el flotador y `low_when` queda correcto.
+2. El módulo de relés hace clic con `hidro switch` y con `pinctrl`.
+3. Tras `docker compose stop`, el relé queda apagado.
+4. Tras `docker compose kill`, el usuario describe el estado del relé.
+5. Si el relé queda activo, se acuerda la mitigación antes de conectar cargas.
+
+### Publicación
+
+- Rama `fase-2`, commits `4e0d333` y posteriores, publicada en `origin/fase-2`.
 
 ## Fase 3 — Flujómetro
 
-Pendiente de hardware (resistencias de 10 kΩ y 20 kΩ).
+**Estado:** en curso. Driver, calibración y documentación listos; falta el
+cableado y la validación física.
+**Rama:** `fase-3` · **Fecha:** 2026-10-22
+
+### Hecho
+
+- `flow_hall`: contador de pulsos protegido, caudal en L/min, total acumulado
+  persistente en `/data` y cierre ordenado.
+- La calibración guardada en `/data/calibration.yaml` reemplaza el
+  `pulses_per_liter` del YAML al construir el driver.
+- `calculate_pulses_per_liter`: valida litros positivos y pulsos mayores que
+  cero.
+- CLI `hidro calibrate flow [--liters N] [--id ID]`: guía la prueba con un
+  recipiente graduado, cuenta los pulsos reales y guarda la calibración. Exige
+  modo hardware y no guarda nada si no hubo pulsos.
+- CLI `hidro flow [--seconds N]`: mide el caudal en una ventana corta con el
+  núcleo detenido, para comprobar el cableado antes de la calibración.
+- El flujómetro usa `bounce_time=None`; con el filtro de 20 ms del flotador se
+  perderían pulsos a caudales altos. El parámetro quedó configurable en
+  `RuntimeContext.gpio_input`.
+- La alarma crítica de flujo ya estaba implementada y probada: se activa tras
+  `alarm_after_s` por debajo de `min_l_min`, bloquea la dosificación, se repite
+  cada 15 min y se recupera al normalizar.
+- README con el divisor de tensión, la calibración y la prueba de alarma.
+- Pruebas nuevas del cálculo de pulsos, del CLI de calibración y del
+  `bounce_time` del flujómetro.
+
+### Bloqueos
+
+- Persisten el acceso SSH sin clave y la falta de hardware de las fases 1, 2 y 3.
+- No hay flujómetro ni resistencias de 10 kΩ y 20 kΩ conectados.
+- Telegram sigue sin configurar, así que no se puede validar la alerta real.
+
+### Tareas
+
+- [x] Driver, persistencia y pruebas.
+- [x] CLI `hidro calibrate flow`.
+- [x] CLI `hidro flow` para verificar el caudal.
+- [x] Corrección del antirrebote para pulsos.
+- [x] Documentación.
+- [ ] Cablear el YF-S401 con el divisor y verificar que la señal no supere 3,3 V.
+- [ ] Ver caudal con agua o soplando.
+- [ ] Calibrar con 1 L y registrar los pulsos/L obtenidos.
+- [ ] Cortar el flujo y recibir la alerta crítica en Telegram.
+- [ ] Confirmar que la dosificación queda bloqueada durante la alarma.
+
+### Punto de control humano
+
+1. El GPIO27 recibe una señal de 0–3,3 V, nunca 5 V.
+2. `hidro flow` muestra un caudal coherente al abrir el flujo.
+3. La calibración con 1 L guarda un valor de pulsos/L y se conserva tras
+   reiniciar el contenedor.
+4. Al cortar el flujo, llega la alerta crítica en Telegram tras el tiempo
+   configurado.
+5. La dosificación permanece bloqueada mientras la alarma está activa.
+
+### Publicación
+
+- Rama `fase-3`, commits `db6fb28` y `bab40a5`, publicada en `origin/fase-3`.
+
+## Revisión de las fases 0–2
+
+**Fecha:** 2026-10-22 · **Rama:** `revision-fases-0-2` (desde `fase-3`)
+
+Revisión del código, las pruebas y la documentación de las fases 0 a 2. Cada
+corrección tiene una prueba que falla con el código anterior.
+
+| Hallazgo | Gravedad | Corrección |
+| --- | --- | --- |
+| `flow_hall` asignaba `when_pressed`, que no existe en `DigitalInputDevice`; gpiozero lo rechaza y el núcleo no arrancaba en modo hardware (también `read`, `switch` y `phase2_check.sh`) | Crítica | Usa `when_activated` |
+| Las pruebas usaban fakes que aceptan cualquier atributo, por eso no se detectó | Técnica | `gpiozero` en `dev`; `test_gpio_hardware.py` usa `MockFactory` |
+| Con `pull: up` el flotador leía `value`, que gpiozero invierte: `low_when` quedaba al revés | Alta | Se lee el nivel físico (`pin.state`) |
+| `pull: none` activaba el pull-down interno | Media | Entrada flotante (`pull_up=None`, `active_state=True`) |
+| Si el primer envío a Telegram fallaba, la alerta no se reintentaba nunca (incluida la crítica de flujo) | Alta | Se reintenta en cada ciclo hasta entregarla |
+| Los errores de httpx incluyen la URL con el token del bot y se escribían en el log | Alta (seguridad) | El token se reemplaza por `<token>` |
+| La dosificación aceptaba lecturas `suspect` (EC sin calibrar, pH sin temperatura), contra el plan 7.2 | Alta | Solo dosifica con calidad `ok` |
+| Sin lectura de flujo o flotador no había alarma y la dosificación no se bloqueaba | Alta | Bloquea si falta una lectura reciente de flujo o flotador |
+| `hidro switch` como PID 1 de `docker compose run` ignoraba SIGTERM: `docker stop` terminaba en SIGKILL con el relé encendido | Media | SIGTERM se trata como Ctrl+C y el `finally` apaga el relé |
+| `hidro switch --seconds 0` o negativo terminaba con traceback | Baja | Se rechaza con código 2 |
+| GPIO ocupado (núcleo corriendo) daba un traceback de gpiozero; `hidro run` no capturaba errores de hardware al arrancar | Media | `DriverError` con la sugerencia de detener `hidro-core`; `run` sale con código 3 |
+| SIGTERM no cortaba una dosis en curso (hasta `max_on_s` = 30 s, igual que `stop_grace_period`) | Media | Las bombas comparten el evento de parada del ciclo |
+| README y `phase2_check.sh` sugerían la carga en `NC` como mitigación, que la deja energizada con el relé en reposo | Alta (eléctrica) | Pull-down de 10 kΩ en `IN` y carga siempre en `COM`–`NO` |
+| Código muerto: `AlertManager(clock=)`, `tds_analog.build_from_config`, `FlowHallSensor.load_total` | Baja | Eliminado |
+
+Pendiente, sin cambios en esta revisión:
+
+- La dosificación busca las mediciones por nombre fijo (`ph`, `ec`) y las bombas
+  por id fijo (`pump_ph_down`…); otro id en el YAML las deja sin efecto. Se
+  revisa en la Fase 6.
+- Una excepción fuera de los drivers (monitor, alertas) termina el ciclo; el
+  `finally` apaga las salidas y Docker reinicia el contenedor.
 
 ## Fase 4 — Aire (HTU21D)
 

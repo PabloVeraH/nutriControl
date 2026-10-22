@@ -28,6 +28,8 @@ class RuntimeContext:
         self.calibration = calibration
         self.latest = latest
         self.outputs: dict[str, Switch] = {}
+        # Se comparte con el ciclo principal: SIGTERM corta una dosis en curso.
+        self.stop_event = threading.Event()
         self._i2c: dict[int, Any] = {}
         self._devices: list[Any] = []
         self._lock = threading.Lock()
@@ -63,17 +65,30 @@ class RuntimeContext:
             from gpiozero import OutputDevice
         except ImportError as exc:  # pragma: no cover - depende del hardware
             raise DriverError("falta gpiozero; instalar las dependencias de hardware") from exc
-        device = OutputDevice(gpio, active_high=active_high, initial_value=initial)
+        try:
+            device = OutputDevice(gpio, active_high=active_high, initial_value=initial)
+        except Exception as exc:
+            raise _gpio_error(gpio, exc) from exc
         self._devices.append(device)
         return device
 
-    def gpio_input(self, gpio: int, *, pull_up: bool) -> Any:
+    def gpio_input(
+        self, gpio: int, *, pull_up: bool | None, bounce_time: float | None = 0.02
+    ) -> Any:
+        """`pull_up=None` deja la entrada flotante (pull-up/down solo externo)."""
         self._require_gpiochip()
         try:
             from gpiozero import DigitalInputDevice
         except ImportError as exc:  # pragma: no cover - depende del hardware
             raise DriverError("falta gpiozero; instalar las dependencias de hardware") from exc
-        device = DigitalInputDevice(gpio, pull_up=pull_up, bounce_time=0.02)
+        # gpiozero exige active_state cuando no hay pull interno.
+        active_state = True if pull_up is None else None
+        try:
+            device = DigitalInputDevice(
+                gpio, pull_up=pull_up, active_state=active_state, bounce_time=bounce_time
+            )
+        except Exception as exc:
+            raise _gpio_error(gpio, exc) from exc
         self._devices.append(device)
         return device
 
@@ -100,3 +115,10 @@ class RuntimeContext:
             except Exception:  # pragma: no cover - cierre defensivo
                 logger.warning("no se pudo cerrar I2C-%s", bus, exc_info=True)
         self._i2c.clear()
+
+
+def _gpio_error(gpio: int, exc: Exception) -> DriverError:
+    return DriverError(
+        f"no se pudo abrir GPIO{gpio}: {exc}. Si hidro-core está corriendo, "
+        "detenerlo antes (docker compose ... stop hidro-core)"
+    )

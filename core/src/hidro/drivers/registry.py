@@ -38,6 +38,8 @@ from hidro.drivers.relay import RelayOutput
 from hidro.drivers.runtime import RuntimeContext
 from hidro.drivers.tds_analog import TDSAnalogSensor
 
+_PULL_UP: dict[str, bool | None] = {"up": True, "down": False, "none": None}
+
 
 def flow_total_path(data_dir: Path, sensor_id: str) -> Path:
     return data_dir / f"flow_total_{sensor_id}.json"
@@ -74,6 +76,7 @@ def build_outputs(config: AppConfig, ctx: RuntimeContext) -> dict[str, Switch]:
                     ml_per_min=ml_per_min,
                     max_on_s=cfg.max_on_s,
                     time_scale=cfg.mock.time_scale,
+                    stop_event=ctx.stop_event,
                 )
             else:
                 relay = RelayOutput(
@@ -85,6 +88,7 @@ def build_outputs(config: AppConfig, ctx: RuntimeContext) -> dict[str, Switch]:
                     relay,
                     ml_per_min=ml_per_min,
                     max_on_s=cfg.max_on_s,
+                    stop_event=ctx.stop_event,
                 )
             outputs[cfg.id] = pump
     ctx.outputs = outputs
@@ -124,13 +128,12 @@ def build_sensors(config: AppConfig, ctx: RuntimeContext) -> list[Sensor]:
             if ctx.mode == "mock":
                 sensors.append(MockFloatSwitchSensor(cfg.id, cfg.mock))
             else:
-                device = ctx.gpio_input(
-                    cfg.gpio,
-                    pull_up=cfg.pull == "up",
-                )
+                device = ctx.gpio_input(cfg.gpio, pull_up=_PULL_UP[cfg.pull])
 
+                # Nivel físico del pin (como `pinctrl get`), no `value`: con
+                # pull-up gpiozero invierte `value` y low_when quedaría al revés.
                 def read_level(dev: Any = device) -> int:
-                    return int(dev.value)
+                    return int(dev.pin.state)
 
                 sensors.append(
                     FloatSwitchSensor(
@@ -161,7 +164,7 @@ def build_sensors(config: AppConfig, ctx: RuntimeContext) -> list[Sensor]:
                 sensors.append(
                     FlowHallSensor(
                         cfg.id,
-                        ctx.gpio_input(cfg.gpio, pull_up=False),
+                        ctx.gpio_input(cfg.gpio, pull_up=False, bounce_time=None),
                         counter,
                         total_path,
                     )

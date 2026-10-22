@@ -27,6 +27,7 @@ def populated(
     at=NOW,
     ph_quality: str = "ok",
     ec_quality: str = "ok",
+    flow: float | None = 1.4,
 ) -> LatestReadings:
     latest = LatestReadings()
     latest.update(
@@ -35,6 +36,8 @@ def populated(
             measurement("ec", ec, "µS/cm", at=at, quality=ec_quality),  # type: ignore[arg-type]
         ]
     )
+    if flow is not None:
+        latest.update([measurement("flow", flow, "L/min", at=at)])
     return latest
 
 
@@ -115,6 +118,36 @@ def test_flow_or_tank_alarm_blocks_dosing(tmp_path: Path) -> None:
     assert "flujo en alarma" in flow.blocked
     tank = controller.plan(NOW, DosingFlags(tank_low=True))
     assert "estanque bajo" in tank.blocked
+
+
+def test_unknown_flow_blocks_dosing(tmp_path: Path) -> None:
+    controller, _ = build(tmp_path, latest=populated(ph=4.8, flow=None))
+    decision = controller.plan(NOW, DosingFlags())
+    assert "sin lectura reciente de flujo (flow)" in decision.blocked
+    assert decision.actions == []
+
+    controller.latest = populated(ph=4.8)
+    controller.latest.update([measurement("flow", 1.4, at=NOW - timedelta(seconds=100))])
+    assert "sin lectura reciente de flujo (flow)" in controller.plan(NOW, DosingFlags()).blocked
+
+
+def test_unknown_tank_level_blocks_dosing(tmp_path: Path) -> None:
+    controller, _ = build(tmp_path, latest=populated(ph=4.8))
+    sensors = [*controller.config.model_dump()["sensors"]]
+    sensors.insert(1, {"id": "tank", "type": "float_switch", "gpio": 17})
+    controller.config = make_config(sensors=sensors, dosing=controller.config.model_dump()["dosing"])
+    assert "sin lectura reciente del flotador (tank)" in controller.plan(NOW, DosingFlags()).blocked
+
+    controller.latest.update([measurement("tank_low", False, "bool")])
+    assert controller.plan(NOW, DosingFlags()).blocked == []
+
+
+def test_suspect_readings_block_dosing(tmp_path: Path) -> None:
+    for latest in (populated(ph=4.8, ec_quality="suspect"), populated(ph=4.8, ph_quality="suspect")):
+        controller, _ = build(tmp_path, latest=latest)
+        decision = controller.plan(NOW, DosingFlags())
+        assert "sin lecturas recientes de pH/EC" in decision.blocked
+        assert decision.actions == []
 
 
 def test_mix_wait_blocks_next_dose(tmp_path: Path) -> None:

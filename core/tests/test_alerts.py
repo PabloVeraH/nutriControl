@@ -117,3 +117,69 @@ def test_silence_expires() -> None:
     manager = AlertManager(notifier)
     manager.silence_for(10, NOW)
     assert not manager.is_silenced(NOW + timedelta(minutes=11))
+
+
+class FlakyNotifier(RecordingNotifier):
+    """Falla los primeros `failures` envíos, como una red caída."""
+
+    def __init__(self, failures: int) -> None:
+        super().__init__()
+        self.failures = failures
+
+    def send(self, text: str) -> bool:
+        if self.failures > 0:
+            self.failures -= 1
+            return False
+        return super().send(text)
+
+
+def test_failed_critical_alert_is_retried_next_cycle() -> None:
+    notifier = FlakyNotifier(failures=1)
+    manager = AlertManager(notifier)
+    manager.report("flow", active=True, severity=Severity.CRITICAL, message="flujo", now=NOW)
+    assert notifier.messages == []
+
+    manager.report(
+        "flow",
+        active=True,
+        severity=Severity.CRITICAL,
+        message="flujo",
+        now=NOW + timedelta(seconds=30),
+    )
+    assert len(notifier.messages) == 1
+
+    # Una vez entregada, vuelve a la cadencia normal de repetición.
+    manager.report(
+        "flow",
+        active=True,
+        severity=Severity.CRITICAL,
+        message="flujo",
+        now=NOW + timedelta(minutes=5),
+    )
+    assert len(notifier.messages) == 1
+
+
+def test_failed_non_critical_alert_is_retried_and_recovers() -> None:
+    notifier = FlakyNotifier(failures=2)
+    manager = AlertManager(notifier)
+    for minute in range(3):
+        manager.report(
+            "tank-low",
+            active=True,
+            severity=Severity.HIGH,
+            message="estanque bajo",
+            now=NOW + timedelta(minutes=minute),
+        )
+    assert len(notifier.messages) == 1
+
+    manager.report(
+        "tank-low",
+        active=True,
+        severity=Severity.HIGH,
+        message="estanque bajo",
+        now=NOW + timedelta(minutes=10),
+    )
+    assert len(notifier.messages) == 1
+
+    manager.report("tank-low", active=False, severity=Severity.HIGH, message="", now=NOW)
+    assert "NORMALIZADO" in notifier.messages[-1]

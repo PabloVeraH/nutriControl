@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from hidro.alerts.manager import Severity
-from hidro.config import AppConfig
+from hidro.config import AppConfig, FloatSwitchConfig, FlowHallConfig
 from hidro.control.safety import SafetyGuard
 from hidro.drivers.base import DoseTooLong, LatestReadings, PumpNotCalibrated, Switch
 from hidro.logging_setup import get_logger
@@ -79,12 +79,20 @@ class DosingController:
             self._finish(decision, notices)
             return decision
 
+        max_age = self.config.read_interval_s * 2.5
         if flags.flow_alarm:
             decision.blocked.append("flujo en alarma")
         if flags.tank_low:
             decision.blocked.append("estanque bajo")
+        # Sin lectura no hay alarma, pero tampoco certeza: no se dosifica a ciegas.
+        for sensor in self.config.sensors:
+            if isinstance(sensor, FlowHallConfig) and self._fresh_value(sensor.id, now, max_age) is None:
+                decision.blocked.append(f"sin lectura reciente de flujo ({sensor.id})")
+            if isinstance(sensor, FloatSwitchConfig) and (
+                self._fresh_value(f"{sensor.id}_low", now, max_age) is None
+            ):
+                decision.blocked.append(f"sin lectura reciente del flotador ({sensor.id})")
 
-        max_age = self.config.read_interval_s * 2.5
         ph = self._fresh_value("ph", now, max_age)
         ec = self._fresh_value("ec", now, max_age)
         if ph is None or ec is None:
@@ -92,7 +100,8 @@ class DosingController:
             notice(
                 "dosing-sensors",
                 Severity.MEDIUM,
-                "No se dosifica: falta una lectura reciente y válida de pH o EC.",
+                "No se dosifica: falta una lectura reciente y confiable de pH o EC "
+                "(sin calibrar o sin temperatura cuenta como no confiable).",
             )
             self._finish(decision, notices)
             return decision
@@ -237,7 +246,8 @@ class DosingController:
 
     def _fresh_value(self, name: str, now: datetime, max_age_s: float) -> float | None:
         measurement = self.latest.get(name)
-        if measurement is None or not measurement.valid:
+        # Plan 7.2: también bloquea "suspect" (EC sin calibrar, pH sin temperatura).
+        if measurement is None or measurement.quality != "ok":
             return None
         if (now - measurement.timestamp).total_seconds() > max_age_s:
             return None

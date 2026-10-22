@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Callable
 
@@ -16,6 +17,7 @@ def build_mock_pump(
     max_on_s: float,
     time_scale: float = 0.05,
     sleep: Callable[[float], None] = time.sleep,
+    stop_event: threading.Event | None = None,
 ) -> PeristalticPump:
     return PeristalticPump(
         pump_id,
@@ -24,4 +26,5 @@ def build_mock_pump(
         max_on_s=max_on_s,
         sleep=sleep,
         time_scale=time_scale,
+        stop_event=stop_event,
     )

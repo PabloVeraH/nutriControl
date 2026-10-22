@@ -1,11 +1,12 @@
-# hidro
+# nutriControl
 
 Sistema de control y monitoreo para un cultivo hidropónico NFT. El núcleo
 (`hidro-core`) lee sensores, publica en InfluxDB, evalúa reglas de alarma y
 dosificación, y avisa por Telegram. Grafana muestra el estado del cultivo.
 
-Estado actual: **Fase 0** (simulación completa en el PC, sin hardware). El
-detalle de lo hecho, lo verificado y los puntos de control está en
+Estado actual: **Fase 0** verificada en simulación. Las fases 1, 2 y 3 tienen el
+software y la verificación listos, pendientes del hardware y del acceso a la Pi.
+El detalle de lo hecho, lo verificado y los puntos de control está en
 [`PROGRESS.md`](PROGRESS.md). El diseño completo está en
 [`PLAN_IMPLEMENTACION.md`](PLAN_IMPLEMENTACION.md).
 
@@ -42,7 +43,7 @@ docker compose -f compose.yaml -f compose.mock.yaml up -d --build
 ```
 
 - Grafana: <http://localhost:3300> con `GRAFANA_ADMIN_USER` y
-  `GRAFANA_ADMIN_PASSWORD`. El dashboard "hidro — sistema NFT" y el datasource
+  `GRAFANA_ADMIN_PASSWORD`. El dashboard "nutriControl — sistema NFT" y el datasource
   se aprovisionan solos.
 - Logs del núcleo: `docker compose -f compose.yaml -f compose.mock.yaml logs -f hidro-core`
 - Estado: `docker compose -f compose.yaml -f compose.mock.yaml ps`
@@ -96,6 +97,8 @@ Dentro del contenedor (o con el paquete instalado en el host):
 | --- | --- |
 | `hidro config-check` | Valida `config/hidro.yaml` |
 | `hidro read [--json]` | Lee todos los sensores una vez |
+| `hidro flow [--seconds N]` | Mide el caudal durante N segundos |
+| `hidro calibrate flow [--liters N]` | Calibra los pulsos por litro del flujómetro |
 | `hidro switch <id> on\|off [--seconds N]` | Acciona un relé (por defecto 5 s) |
 | `hidro pump <id> --ml N [--yes]` | Dosifica con una bomba peristáltica |
 | `hidro alert-test` | Envía un mensaje de prueba a Telegram |
@@ -169,14 +172,20 @@ mypy src
 
 Las pruebas cubren fórmulas, calibración, reglas de dosificación y límites de
 seguridad. `smbus2` no funciona en Windows: los drivers reales solo se importan
-bajo demanda; en el PC se usa el modo mock.
+bajo demanda; en el PC se usa el modo mock. Las dependencias de desarrollo
+incluyen `gpiozero` (sin `lgpio`): `tests/test_gpio_hardware.py` ejercita el
+camino de hardware con su `MockFactory`, así un uso incorrecto de la API falla
+en el PC y no recién en la Pi.
 
 ## Despliegue en la Raspberry Pi
 
 La Pi comparte equipo con otros servicios. El stack está limitado a 256 + 768 +
-384 MB y Grafana usa el puerto 3300.
+384 MB y Grafana usa el puerto 3300. La imagen se construye en la propia Pi
+(arm64), así que el primer build puede tardar varios minutos.
 
-Preparación del host (una vez):
+### Preparación del host (una vez)
+
+Sobre Raspberry Pi OS de 64 bits, con acceso SSH:
 
 ```bash
 sudo apt update && sudo apt full-upgrade -y
@@ -187,40 +196,190 @@ sudo raspi-config nonint do_onewire 0
 sudo reboot
 ```
 
-Después del reinicio, verifica y anota los GIDs:
+Después del reinicio, comprueba que Docker funciona sin `sudo` y que los buses
+están activos:
 
 ```bash
+docker run --rm hello-world
 getent group gpio i2c
 ls -l /dev/i2c-1 /dev/gpiochip0
 ls /sys/bus/w1/devices/
 ```
 
-Completa en el `.env` de la Pi `GPIO_GID`, `I2C_GID`, `DEPLOY_HOST` y
-`DEPLOY_PATH`. La primera vez hay que copiar el `.env` a la Pi (no está en git):
+### Diagnóstico del host
+
+Clona el repositorio en la Pi y ejecuta el diagnóstico (no modifica nada):
+
+```bash
+cd ~/nutriControl
+bash scripts/pi_check.sh
+```
+
+Revisa el modelo, la RAM, el disco, Docker, los grupos, los GIDs declarados en
+`.env` frente a los reales, `/dev/i2c-1`, `/dev/gpiochip0`, los overlays de I2C
+y 1-Wire, las sondas DS18B20 con su temperatura, `i2cdetect` y el puerto 3300.
+El script termina con código distinto de cero si algo crítico falla.
+
+### `.env` en la Pi
+
+El `.env` no se versiona. La primera vez cópialo desde el PC:
 
 ```bash
 scp .env usuario@host:~/nutriControl/.env
 ```
 
-Despliegue:
+En la Pi completa `GPIO_GID` e `I2C_GID` con los valores reales de
+`getent group gpio i2c`, además de los secretos de InfluxDB, Grafana y
+Telegram. En el PC, `DEPLOY_HOST` y `DEPLOY_PATH` indican el destino SSH.
+Para que `deploy.sh` no pida contraseña:
+
+```bash
+ssh-copy-id usuario@host
+```
+
+### Despliegue
 
 ```bash
 ./deploy.sh
 ```
 
 El script exige un árbol limpio, empuja la rama actual, entra por SSH, clona el
-repositorio si falta, hace `git pull`, genera las alertas de Grafana y levanta:
+repositorio si falta, hace `git pull`, genera las alertas de Grafana si hay
+Telegram y levanta:
 
 ```bash
 docker compose -f compose.yaml -f compose.hardware.yaml -f compose.alerts.yaml up -d --build
 ```
 
-Requiere `TELEGRAM_BOT_TOKEN` y `TELEGRAM_CHAT_ID` porque el stack de la Pi
-siempre aprovisiona las alertas. Variables útiles: `DEPLOY_SKIP_PUSH=1` (no
-empujar) y `DEPLOY_ALLOW_DIRTY=1` (permitir cambios sin commitear).
+Si faltan `TELEGRAM_BOT_TOKEN` o `TELEGRAM_CHAT_ID`, avisa y despliega sin las
+alertas de Grafana. Para exigirlas siempre usa `DEPLOY_REQUIRE_ALERTS=1`.
+Otras variables: `DEPLOY_SKIP_PUSH=1` (no empujar) y `DEPLOY_ALLOW_DIRTY=1`
+(permitir cambios sin commitear).
 
 La Pi necesita credenciales de git para el repositorio privado (clave SSH o
 token). No las guardes en el repositorio.
+
+### Fase 1: sondas DS18B20
+
+El driver real ya está implementado y probado; esta fase valida el cableado y
+la calibración. Con las sondas conectadas según el plano:
+
+```bash
+ls /sys/bus/w1/devices/                       # seriales 28-...
+cat /sys/bus/w1/devices/28-xxxxxxxxxxxx/w1_slave
+```
+
+Copia los dos seriales en `config/hidro.yaml` (`water_temp_1` y
+`water_temp_2`). Después verifica que el contenedor ve el bus y las sondas:
+
+```bash
+docker compose -f compose.yaml -f compose.hardware.yaml exec hidro-core ls /sys/bus/w1/devices
+docker compose -f compose.yaml -f compose.hardware.yaml exec hidro-core hidro read
+```
+
+Hasta que se conecten los sensores de las fases siguientes, sus lecturas
+aparecerán como `invalid`; es lo esperado. Si Telegram está activo, llegará un
+aviso único por cada sensor ausente ("sin lectura válida"); no se repite salvo
+que la condición sea crítica. La prueba de aceptación es tomar una
+sonda en la mano y ver subir su temperatura en Grafana.
+
+Si una sonda marca 85 °C o CRC inválida, revisa el cableado, la resistencia de
+4,7 kΩ y que el serial del YAML coincida con el del bus.
+
+### Fase 2: flotador y relés
+
+Cablea el flotador (sección 4.3 del plan: GPIO17 con pull-down de 10 kΩ) y el
+módulo de relés (4.7: puente en **High**, `DC+` a 5 V, canales en GPIO22 y
+GPIO23). **No conectes cargas todavía.**
+
+El valor de `low_when` depende de la orientación física del flotador:
+
+- `low_when: 0` si entrega `0` cuando el estanque está bajo.
+- `low_when: 1` si la lógica está invertida.
+
+`low_when` se compara con el nivel físico del pin (el mismo que muestra
+`pinctrl get 17`), sea cual sea `pull`. `pull: down` coincide con la
+resistencia externa de 10 kΩ a GND; `pull: none` deja solo la externa.
+
+Para comprobarlo hay que detener el núcleo: los GPIO quedan tomados por
+`hidro-core` y un segundo proceso no puede abrirlos.
+
+```bash
+docker compose -f compose.yaml -f compose.hardware.yaml stop hidro-core
+docker compose -f compose.yaml -f compose.hardware.yaml run --rm --no-deps hidro-core read
+```
+
+Mueve el flotador y repite la lectura. Ajusta `low_when` en `config/hidro.yaml`
+hasta que `tank_level_low` valga `sí` solo con el nivel bajo.
+
+Los relés se prueban sin carga:
+
+```bash
+docker compose -f compose.yaml -f compose.hardware.yaml run --rm --no-deps \
+  hidro-core switch tds_power on --seconds 3
+docker compose -f compose.yaml -f compose.hardware.yaml run --rm --no-deps \
+  hidro-core switch tds_power off
+```
+
+El canal 1 (bomba, GPIO22) se puede comprobar en el host con
+`pinctrl set 22 op dh`, esperar y `pinctrl set 22 op dl`; con la aplicación se
+prueba en la Fase 6. `hidro switch` rechaza las bombas peristálticas a
+propósito: para dosificar se usa `hidro pump` con la bomba calibrada.
+
+La verificación asistida hace todo lo anterior y además prueba el apagado:
+
+```bash
+bash scripts/phase2_check.sh
+```
+
+Pide confirmar que no hay cargas, detiene y restaura `hidro-core`, comprueba el
+flotador, acciona `tds_power` y guía las pruebas de robustez:
+
+- **SIGTERM:** `docker compose stop hidro-core` con `tds_power` energizado debe
+  apagar todas las salidas.
+- **SIGKILL:** `docker compose kill hidro-core` mientras `tds_power` está
+  energizado. Al liberar el GPIO, la Pi normalmente lo deja como entrada sin
+  excitación (esta prueba lo confirma): si el relé queda activo o indeterminado, hay que añadir una resistencia
+  pull-down (10 kΩ de `IN` a GND) en la entrada del módulo antes de conectar
+  cargas. La carga va siempre en `COM`–`NO`: **nunca en `NC`**, que queda
+  cerrado justamente cuando el relé está en reposo. El resultado se registra en
+  `PROGRESS.md`.
+
+### Fase 3: flujómetro
+
+Cablea el YF-S401 según la sección 4.4: rojo a 5 V, negro a GND, amarillo al
+divisor de 10 kΩ y 20 kΩ, y el punto medio a GPIO27. El divisor es obligatorio:
+el GPIO no admite 5 V. Verifica con un multímetro que la señal no supere 3,3 V.
+
+Con el flujo detenido, calibra con un recipiente graduado. El CLI cuenta los
+pulsos reales y guarda el resultado en `/data/calibration.yaml`; el valor de
+`pulses_per_liter` del YAML queda como referencia:
+
+```bash
+docker compose -f compose.yaml -f compose.hardware.yaml stop hidro-core
+docker compose -f compose.yaml -f compose.hardware.yaml run --rm --no-deps \
+  hidro-core calibrate flow --liters 1
+```
+
+El comando pide confirmación para empezar y para terminar. Vierte exactamente
+1 L (o el valor de `--liters`) y pulsa Enter. Si no cuenta pulsos, revisa el
+divisor, la masa común y que el GPIO sea 27.
+
+Antes de reiniciar, verifica el caudal. Abre el flujo y pulsa Enter:
+
+```bash
+docker compose -f compose.yaml -f compose.hardware.yaml run --rm --no-deps \
+  hidro-core flow --seconds 5
+docker compose -f compose.yaml -f compose.hardware.yaml up -d hidro-core
+```
+
+El comando mide durante 5 s y muestra los L/min y el volumen contado. Con el
+flujo abierto debe superar `min_l_min` (0,3 L/min). La alarma crítica se activa
+tras `alarm_after_s` (60 s) sin caudal suficiente; requiere Telegram configurado,
+se repite cada 15 min y bloquea la dosificación.
+
+El flujómetro usa `bounce_time=None` para no perder pulsos a caudales altos; el
+filtro de 20 ms se reserva para el flotador.
 
 ## Operación
 
@@ -264,6 +423,6 @@ config/hidro.yaml         # hardware declarado, rangos y reglas
 config/grafana/           # provisioning de datasource, dashboard y alertas
 core/src/hidro/           # paquete: drivers, control, alertas, storage, CLI
 core/tests/               # pruebas sin hardware
-scripts/                  # utilidades de despliegue
+scripts/                  # render de alertas y diagnóstico de la Pi
 deploy.sh                 # PC → Pi por SSH
 ```

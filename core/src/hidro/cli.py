@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import signal
 import sys
 import time
 from datetime import UTC, datetime
 
 from hidro import __version__
 from hidro.calibration import CalibrationStore
-from hidro.config import ConfigError, load_config
+from hidro.config import ConfigError, FlowHallConfig, load_config
 from hidro.control.safety import SafetyGuard
 from hidro.drivers.base import DoseTooLong, DriverError, PumpNotCalibrated
 from hidro.logging_setup import setup_logging
@@ -84,8 +85,143 @@ def cmd_read(args: argparse.Namespace) -> int:
         app.close()
 
 
+def cmd_calibrate_flow(args: argparse.Namespace) -> int:
+    from hidro.drivers.base import LatestReadings
+    from hidro.drivers.flow_hall import (
+        FlowCounter,
+        FlowHallSensor,
+        calculate_pulses_per_liter,
+    )
+    from hidro.drivers.registry import flow_total_path
+    from hidro.drivers.runtime import RuntimeContext
+
+    settings = _settings(verbose=True)
+    config = load_config(settings.config_path, settings.mode_override)
+    if config.mode != "hardware":
+        print(
+            "la calibración de flujo requiere el modo hardware "
+            "(HIDRO_HARDWARE=hardware)",
+            file=sys.stderr,
+        )
+        return 2
+    if args.liters <= 0:
+        print("--liters debe ser positivo", file=sys.stderr)
+        return 2
+
+    flows = [sensor for sensor in config.sensors if isinstance(sensor, FlowHallConfig)]
+    if args.id is not None:
+        flows = [sensor for sensor in flows if sensor.id == args.id]
+    if not flows:
+        print("no se encontró el flujómetro en la configuración", file=sys.stderr)
+        return 2
+    flow = flows[0]
+
+    print(f"Calibración de flujo: {flow.id} (GPIO{flow.gpio})")
+    print(f"Prepara un recipiente graduado y {args.liters:g} L de agua.")
+    print("El flujo debe estar detenido antes de empezar.")
+    try:
+        input("Pulsa Enter para comenzar a contar pulsos... ")
+    except (EOFError, KeyboardInterrupt):
+        print("\ncalibración cancelada", file=sys.stderr)
+        return 130
+
+    store = CalibrationStore(settings.data_dir / "calibration.yaml")
+    runtime = RuntimeContext(config.mode, settings.data_dir, store, LatestReadings())
+    try:
+        counter = FlowCounter(flow.pulses_per_liter)
+        FlowHallSensor(
+            flow.id,
+            runtime.gpio_input(flow.gpio, pull_up=False, bounce_time=None),
+            counter,
+            flow_total_path(settings.data_dir, flow.id),
+        )
+        input(f"Vierte exactamente {args.liters:g} L y pulsa Enter al terminar... ")
+        pulses_per_liter = calculate_pulses_per_liter(counter.pulses, args.liters)
+        previous = store.flow()
+        store.save_flow(pulses_per_liter=pulses_per_liter)
+        print(f"calibración guardada: {pulses_per_liter:.0f} pulsos/L")
+        if previous is not None:
+            print(f"  valor anterior: {previous.pulses_per_liter:.0f} pulsos/L")
+        print("Reinicia hidro-core para aplicar la nueva calibración.")
+        return 0
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    except (EOFError, KeyboardInterrupt):
+        print("\ncalibración cancelada", file=sys.stderr)
+        return 130
+    finally:
+        runtime.close()
+
+
+def cmd_flow(args: argparse.Namespace) -> int:
+    from hidro.drivers.base import LatestReadings
+    from hidro.drivers.flow_hall import FlowCounter, FlowHallSensor
+    from hidro.drivers.registry import flow_total_path
+    from hidro.drivers.runtime import RuntimeContext
+
+    settings = _settings(verbose=True)
+    config = load_config(settings.config_path, settings.mode_override)
+    if config.mode != "hardware":
+        print(
+            "la medición de flujo requiere el modo hardware "
+            "(HIDRO_HARDWARE=hardware)",
+            file=sys.stderr,
+        )
+        return 2
+    if args.seconds <= 0:
+        print("--seconds debe ser positivo", file=sys.stderr)
+        return 2
+
+    flows = [sensor for sensor in config.sensors if isinstance(sensor, FlowHallConfig)]
+    if args.id is not None:
+        flows = [sensor for sensor in flows if sensor.id == args.id]
+    if not flows:
+        print("no se encontró el flujómetro en la configuración", file=sys.stderr)
+        return 2
+    flow = flows[0]
+
+    print(f"Flujo: {flow.id} (GPIO{flow.gpio})")
+    try:
+        input("Abre el flujo y pulsa Enter para medir... ")
+    except (EOFError, KeyboardInterrupt):
+        print("\nmedición cancelada", file=sys.stderr)
+        return 130
+
+    store = CalibrationStore(settings.data_dir / "calibration.yaml")
+    calibration = store.flow()
+    pulses_per_liter = (
+        calibration.pulses_per_liter if calibration is not None else flow.pulses_per_liter
+    )
+    runtime = RuntimeContext(config.mode, settings.data_dir, store, LatestReadings())
+    try:
+        counter = FlowCounter(pulses_per_liter)
+        FlowHallSensor(
+            flow.id,
+            runtime.gpio_input(flow.gpio, pull_up=False, bounce_time=None),
+            counter,
+            flow_total_path(settings.data_dir, flow.id),
+            save_every_s=3600,
+        )
+        counter.sample(time.monotonic())
+        print(f"Midiendo durante {args.seconds:g} s...")
+        time.sleep(args.seconds)
+        rate, total = counter.sample(time.monotonic())
+        print(f"caudal: {rate:.3f} L/min")
+        print(f"volumen contado: {total:.3f} L")
+        if counter.pulses == 0:
+            print("no se registraron pulsos; revisa el divisor, la masa y el GPIO")
+        return 0
+    finally:
+        runtime.close()
+
+
 def cmd_switch(args: argparse.Namespace) -> int:
     from hidro.bootstrap import build_app
+
+    if args.state == "on" and args.seconds <= 0:
+        print("--seconds debe ser positivo", file=sys.stderr)
+        return 2
 
     settings = _settings(verbose=True)
     config = load_config(settings.config_path, settings.mode_override)
@@ -105,14 +241,18 @@ def cmd_switch(args: argparse.Namespace) -> int:
             output.off()
             print(f"{args.id}: apagado")
             return 0
-        output.on()
-        print(f"{args.id}: encendido por {args.seconds:g} s (Ctrl+C para cortar)")
+        # Como PID 1 de `docker compose run`, sin manejador el proceso ignora
+        # SIGTERM y Docker termina con SIGKILL: el relé quedaría sin apagar.
+        previous = signal.signal(signal.SIGTERM, signal.default_int_handler)
         try:
+            output.on()
+            print(f"{args.id}: encendido por {args.seconds:g} s (Ctrl+C para cortar)")
             time.sleep(args.seconds)
         except KeyboardInterrupt:
             pass
         finally:
             output.off()
+            signal.signal(signal.SIGTERM, previous)
             print(f"{args.id}: apagado")
         return 0
     finally:
@@ -177,8 +317,6 @@ def cmd_alert_test(_args: argparse.Namespace) -> int:
 def cmd_safety_reset(args: argparse.Namespace) -> int:
     settings = _settings(verbose=True)
     config = load_config(settings.config_path, settings.mode_override)
-    store = CalibrationStore(settings.data_dir / "calibration.yaml")
-    del store  # se conserva la calibración; solo se reinicia la seguridad
     guard = SafetyGuard(settings.data_dir / "safety.json", config.dosing.limits)
     guard.reset(args.pump)
     print(f"seguridad reiniciada: {args.pump or 'todas las bombas'}")
@@ -214,6 +352,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     check_parser = subparsers.add_parser("config-check", help="validar la configuración")
     check_parser.set_defaults(func=cmd_config_check)
+
+    flow_parser = subparsers.add_parser("flow", help="medir el caudal durante N segundos")
+    flow_parser.add_argument("--seconds", type=float, default=5.0)
+    flow_parser.add_argument("--id", default=None, help="id del flujómetro")
+    flow_parser.set_defaults(func=cmd_flow)
+
+    calibrate_parser = subparsers.add_parser("calibrate", help="calibrar sensores")
+    calibrate_sub = calibrate_parser.add_subparsers(dest="sensor", required=True)
+    flow_parser = calibrate_sub.add_parser(
+        "flow", help="calibrar los pulsos por litro del flujómetro"
+    )
+    flow_parser.add_argument("--id", default=None, help="id del flujómetro")
+    flow_parser.add_argument(
+        "--liters", type=float, default=1.0, help="volumen vertido para calibrar"
+    )
+    flow_parser.set_defaults(func=cmd_calibrate_flow)
 
     switch_parser = subparsers.add_parser("switch", help="accionar un relé")
     switch_parser.add_argument("id")
