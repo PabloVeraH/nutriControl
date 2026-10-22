@@ -598,8 +598,15 @@ docker compose -f compose.yaml -f compose.hardware.yaml up -d hidro-core
 
 Si la bomba no tiene `role: ph_down` en `config/hidro.yaml`, las reglas usan el
 id convencional `pump_ph_down`; también puedes declarar el rol explícitamente
-y cambiar el id sin tocar el código. Los sensores de pH y EC se toman por tipo,
-así que sus ids pueden ser otros.
+y cambiar el id sin tocar el código. Un id convencional no puede declarar otro
+rol (`pump_ph_up` con `role: ph_down` se rechaza). Los sensores de pH y EC se
+toman por tipo, así que sus ids pueden ser otros.
+
+Dirección de la corrección: **pH alto se baja con `ph_down` (ácido)** y pH bajo
+se sube con `ph_up` (base). Con una sola bomba `ph_down`, un pH bajo genera un
+aviso para corregir a mano y nunca agrega más ácido. Los nutrientes A y B se
+dosifican juntos: si una de las dos no puede (falta, sin calibrar, bloqueada),
+no se dosifica ninguna.
 
 #### Semana en dry_run y límites
 
@@ -617,14 +624,20 @@ segundos deben ser coherentes. Si falta una bomba, no está calibrada o la dosis
 supera `max_on_s`, el aviso lo indica y no se simula una acción.
 
 Los límites 7.3 son por bomba y persistentes entre reinicios: por defecto 3
-dosis por hora y 20 ml/día para `pump_ph_down`. Al alcanzar un límite, o si una
-dosis falla, la bomba queda bloqueada y hay que revisar el cultivo antes de
-reanudar:
+dosis por hora y 20 ml/día para `pump_ph_down`. Con dosis reales, al alcanzar
+un límite, o si una dosis falla, la bomba queda bloqueada y hay que revisar el
+cultivo antes de reanudar. El reset no usa GPIO, así que se ejecuta con el
+núcleo en marcha y este lo ve en su siguiente evaluación:
 
 ```bash
-hidro safety reset pump_ph_down   # solo esa bomba
-hidro safety reset                # todas las bombas
+docker compose -f compose.yaml -f compose.hardware.yaml exec hidro-core   hidro safety reset pump_ph_down   # solo esa bomba
+docker compose -f compose.yaml -f compose.hardware.yaml exec hidro-core   hidro safety reset                # todas las bombas
 ```
+
+En `dry_run` el pH no cambia y la misma regla se repite, así que el límite se
+alcanza enseguida: se avisa `SIMULACIÓN: ... se bloquearía` pero **no** se deja
+un bloqueo real, y las dosis simuladas no cuentan para los límites de las dosis
+reales. Un bloqueo real (por ejemplo, de un fallo) sí se respeta en `dry_run`.
 
 Reiniciar una bomba no borra los límites de las demás. El nombre anterior
 `hidro safety-reset` sigue funcionando. No reinicies el bloqueo para “seguir
@@ -640,7 +653,8 @@ La fase no se cierra hasta completar y registrar:
 3. Semana en `dry_run` con decisiones y avisos revisados en Telegram.
 4. Prueba de parada: `docker compose stop hidro-core` y Ctrl+C en una dosis
    dejan la bomba apagada.
-5. Límite alcanzado y `hidro safety reset` verificados.
+5. Aviso `se bloquearía` visto en `dry_run`; con las primeras dosis reales,
+   bloqueo por límite y `hidro safety reset` verificados.
 6. Aprobación explícita del usuario antes de poner `dry_run: false` y hacer la
    primera dosis real, empezando por un volumen pequeño.
 

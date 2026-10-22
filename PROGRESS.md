@@ -583,6 +583,36 @@ en `dry_run` antes de habilitar dosis reales.
 Los comandos concretos están en el README, sección "Fase 6: bomba peristáltica
 y dosificación".
 
+### Revisión
+
+Rama `revision-fase-6` (desde `fase-6`). Hallazgos corregidos:
+
+- **Crítico — corrección de pH invertida** (heredado de la Fase 0): con pH
+  bajo se programaba `pump_ph_down` (más ácido) y con pH alto `pump_ph_up`; los
+  tests lo fijaban. Ahora pH bajo → `ph_up` con `ph_up_ml` y pH alto →
+  `ph_down` con `ph_down_ml`. Con la única bomba `ph_down`, un pH bajo solo
+  avisa. Si `ph_danger` llega sin lectura fuera de rango, no se dosifica.
+- **`hidro safety reset` no surtía efecto con el núcleo vivo:** el núcleo
+  guardaba los bloqueos en memoria y los reescribía en el siguiente guardado.
+  `SafetyGuard` relee `safety.json` en cada operación; un archivo dañado ya no
+  borra los bloqueos. README: el reset se hace con `exec`.
+- **`dry_run` generaba bloqueos reales:** como el pH simulado no cambia, el
+  límite de 3 dosis/h se alcanzaba en ~30 min y dejaba la bomba bloqueada para
+  cuando se pasara a dosis reales. Ahora en `dry_run` se avisa "se bloquearía"
+  sin bloquear, y dosis simuladas y reales se cuentan por separado.
+- **Nutrientes desbalanceados:** si B estaba bloqueada o sin calibrar, A se
+  dosificaba sola. Ahora van juntas o ninguna.
+- **Rol contradictorio:** `pump_ph_up` con `role: ph_down` hacía que la regla
+  de subir pH usara el ácido por el id de respaldo; la configuración lo rechaza.
+- **Driver:** `dispense_ml(nan)` dejaba la bomba encendida en un bucle sin fin
+  (`nan <= 0` es falso); ahora exige volumen finito. Una parada a mitad de dosis
+  devuelve el tiempo real encendida en vez del pedido.
+- **`calibrate pump`:** un error de tipeo en el volumen abortaba después de
+  bombear; ahora vuelve a preguntar.
+- Pruebas nuevas verificadas contra el código original (fallan o se cuelgan,
+  caso NaN). `pytest`: 319 pruebas, cobertura 90,85 %; `ruff` y `mypy` sin
+  hallazgos.
+
 ### Publicación
 
 - Rama `fase-6`, commit `fae9c3c` (`feat(fase-6): calibrar bombas y persistir
