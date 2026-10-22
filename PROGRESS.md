@@ -310,6 +310,23 @@ Pendiente, sin cambios en esta revisión:
 - Una excepción fuera de los drivers (monitor, alertas) termina el ciclo; el
   `finally` apaga las salidas y Docker reinicia el contenedor.
 
+## Revisión de la fase 3
+
+**Fecha:** 2026-10-22 · **Rama:** `revision-fase-3` (desde `main`)
+
+| Hallazgo | Gravedad | Corrección |
+| --- | --- | --- |
+| Si fallaba el guardado del total en `/data`, la excepción anulaba la lectura de flujo y la alarma crítica no podía activarse | Alta | El error se registra y el caudal se publica igual |
+| Un `calibration.yaml` inválido se ignoraba en silencio y la siguiente calibración lo sobrescribía, borrando pH, EC y bombas | Alta | Guardar sobre un archivo inválido es un error; al leer se avisa en el log |
+| Un error de sintaxis YAML en `calibration.yaml` impedía arrancar (bucle de reinicios) | Media | Se ignora con aviso, igual que los demás errores |
+| La primera lectura del flujómetro siempre daba 0 L/min (sin ventana previa): `hidro read` y un punto falso tras cada reinicio | Media | La ventana empieza al construir el sensor; con menos de 1 s la lectura es `invalid` y no consume pulsos |
+| `hidro calibrate flow` guardaba cualquier valor, aunque fuera absurdo por ruido o un volumen mal medido | Media | Pide confirmación fuera de 0,5×–2× de la referencia |
+
+Sin cambios: un flujómetro sin lectura genera el aviso medio de "sensor sin
+lectura" (tabla 7.1). Con el cable cortado no llegan pulsos y se lee 0 L/min,
+así que la alarma crítica sí se activa; desde la revisión anterior, además, la
+falta de lectura bloquea la dosificación.
+
 ## Fase 4 — Aire (HTU21D)
 
 Pendiente de hardware.

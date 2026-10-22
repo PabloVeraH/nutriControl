@@ -363,7 +363,14 @@ docker compose -f compose.yaml -f compose.hardware.yaml run --rm --no-deps \
 
 El comando pide confirmación para empezar y para terminar. Vierte exactamente
 1 L (o el valor de `--liters`) y pulsa Enter. Si no cuenta pulsos, revisa el
-divisor, la masa común y que el GPIO sea 27.
+divisor, la masa común y que el GPIO sea 27. Si el resultado se aleja a menos
+de la mitad o a más del doble de la referencia (la calibración anterior o
+`pulses_per_liter`), el comando pide confirmación antes de guardarlo: suele
+indicar ruido en la señal o un volumen mal medido.
+
+Si `/data/calibration.yaml` está dañado, el núcleo lo ignora con un aviso y los
+comandos de calibración se niegan a sobrescribirlo, para no perder las demás
+calibraciones.
 
 Antes de reiniciar, verifica el caudal. Abre el flujo y pulsa Enter:
 
@@ -380,6 +387,10 @@ se repite cada 15 min y bloquea la dosificación.
 
 El flujómetro usa `bounce_time=None` para no perder pulsos a caudales altos; el
 filtro de 20 ms se reserva para el flotador.
+
+El caudal se calcula sobre la ventana entre dos lecturas. `hidro read` lee una
+sola vez, justo al arrancar, así que el flujo puede aparecer como `invalid`
+(ventana menor a 1 s); para ver el caudal se usa `hidro flow`.
 
 ## Operación
 
