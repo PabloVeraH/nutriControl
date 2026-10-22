@@ -11,7 +11,7 @@ siguiente fase sin cerrar el punto de control humano correspondiente.
 | 1 — Raspberry + sondas de temperatura | En curso; software y documentación listos, validación física pendiente | `fase-1` |
 | 2 — Flotador y relés | En curso; drivers, CLI y verificación listos, validación física pendiente | `fase-2` |
 | 3 — Flujómetro | En curso; driver y calibración listos, validación física pendiente | `fase-3` |
-| 4 — Aire (HTU21D) | Pendiente | — |
+| 4 — Aire (HTU21D) | En curso; driver, cálculos y verificación listos, validación física pendiente | `fase-4` |
 | 5 — pH y TDS (ADS1115) | Pendiente | — |
 | 6 — Bomba y dosificación | Pendiente | — |
 | 7 — Operación | Pendiente | — |
@@ -329,7 +329,58 @@ falta de lectura bloquea la dosificación.
 
 ## Fase 4 — Aire (HTU21D)
 
-Pendiente de hardware.
+**Estado:** en curso. Driver, cálculos, pruebas y verificación listos; falta el
+sensor conectado y la comprobación física.
+**Rama:** `fase-4` (desde `main`) · **Fecha:** 2026-10-22
+
+### Hecho
+
+- Driver real `htu21d`: reset, lectura de temperatura y humedad por I2C,
+  validación CRC-8 y descarte de tramas incompletas o con error de bus.
+- Conversiones de fábrica y publicación de `air_temp`, `air_humidity`,
+  `air_vpd` y `air_dew_point`.
+- `calc.py`: VPD con Tetens y punto de rocío con Magnus, con humedad acotada
+  para evitar valores no físicos o `NaN`.
+- Simulador `MockHTU21DSensor` con los mismos cuatro valores y escenario de
+  desconexión; registro automático en modo mock/hardware.
+- Pruebas del CRC, las conversiones, los valores derivados, las tramas cortas,
+  los errores de bus y el fallo de reset.
+- `scripts/phase4_check.sh`: detiene el núcleo, comprueba `0x40` con
+  `i2cdetect`, valida los cuatro valores y verifica que la humedad sube al
+  soplar; restaura el estado del núcleo al terminar.
+- README con el cableado a 3,3 V, la dirección `0x40`, la lectura manual y la
+  comprobación asistida.
+
+### Bloqueos
+
+- Persisten el acceso SSH sin clave y la falta de hardware de las fases 1, 2 y 3.
+- No hay HTU21D con pines soldados ni un módulo conectado al bus I2C.
+- Sin acceso a la Pi no se puede ejecutar `i2cdetect` ni la comprobación física.
+
+### Tareas
+
+- [x] Driver HTU21D con CRC.
+- [x] VPD y punto de rocío.
+- [x] Simulador y registro del driver.
+- [x] Pruebas unitarias y de errores.
+- [x] Script de verificación y documentación.
+- [ ] Soldar los pines y cablear a 3,3 V, GND, SDA y SCL.
+- [ ] Confirmar `40` en `i2cdetect -y 1`.
+- [ ] Ver temperatura y humedad coherentes con el ambiente.
+- [ ] Soplar sobre el sensor y confirmar que la humedad sube.
+- [ ] Verificar que VPD y punto de rocío son coherentes.
+
+### Punto de control humano
+
+1. `i2cdetect -y 1` muestra el HTU21D en `0x40`.
+2. `hidro read` publica temperatura y humedad coherentes con el ambiente.
+3. Al soplar sobre el sensor, la humedad sube.
+4. `air_vpd` está en kPa, no es negativo, y `air_dew_point` no supera la
+   temperatura del aire.
+
+### Publicación
+
+- Rama `fase-4`, pendiente de publicar al cerrar este registro.
 
 ## Fase 5 — pH y TDS (ADS1115)
 
