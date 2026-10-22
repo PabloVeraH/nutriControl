@@ -2,8 +2,9 @@
 # Verificación asistida de la fase 4: sensor de aire HTU21D.
 #
 # Se ejecuta en la Raspberry Pi, desde la raíz del repositorio y con el stack
-# ya desplegado. Detiene hidro-core para no interferir con el bus I2C y lo
-# vuelve a dejar como estaba al terminar.
+# ya desplegado. Detiene hidro-core porque `hidro read` abre todos los GPIO y
+# el bus I2C (un segundo proceso no puede tomarlos) y lo vuelve a dejar como
+# estaba al terminar.
 #
 # Uso: bash scripts/phase4_check.sh [id_del_sensor]
 set -u
@@ -98,7 +99,13 @@ fi
 
 section "2/3 Lectura de temperatura, humedad, VPD y punto de rocío"
 first="$(run_cli read 2>&1)"
-printf '%s\n' "$first" | grep -E "^(  )?${AIR_ID}_(temp|humidity|vpd|dew_point)" | sed 's/^/  /'
+air_lines="$(printf '%s\n' "$first" | grep -E "^(  )?${AIR_ID}_(temp|humidity|vpd|dew_point)")"
+if [[ -n "$air_lines" ]]; then
+  printf '%s\n' "$air_lines" | sed 's/^/  /'
+else
+  # Sin filas del sensor: mostrar la salida completa (suele traer el error).
+  printf '%s\n' "$first" | sed 's/^/  /'
+fi
 for name in "${AIR_ID}_temp" "${AIR_ID}_humidity" "${AIR_ID}_vpd" "${AIR_ID}_dew_point"; do
   value="$(value_of "$first" "$name")"
   quality="$(quality_of "$first" "$name")"
@@ -143,8 +150,11 @@ section "3/3 Respuesta al aliento"
 if ! is_number "$humidity"; then
   problem "sin humedad inicial; no se puede comparar"
 else
-  echo "Sopla suavemente sobre el sensor durante 5–10 s, sin tocarlo ni mojarlo."
-  read -r -p "Pulsa Enter cuando termines de soplar... " _
+  # La lectura arranca un contenedor nuevo y tarda unos segundos: si se sopla
+  # antes, la humedad ya bajó cuando llega la lectura.
+  echo "Al pulsar Enter empieza a soplar suavemente sobre el sensor, sin tocarlo"
+  echo "ni mojarlo, y sigue soplando hasta que aparezca la lectura."
+  read -r -p "Pulsa Enter y sopla... " _
   second="$(run_cli read 2>&1)"
   humidity_after="$(value_of "$second" "${AIR_ID}_humidity")"
   if ! is_number "$humidity_after"; then
