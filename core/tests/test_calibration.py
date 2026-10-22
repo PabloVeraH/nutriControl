@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from hidro.calibration import CalibrationStore, PHCalibration
+from hidro.calibration import CalibrationStore, ECCalibration, PHCalibration
 
 
 def make_ph(**overrides: float) -> PHCalibration:
@@ -117,6 +117,21 @@ def test_store_rejects_negative_values(tmp_path: Path) -> None:
         store.save_flow(pulses_per_liter=0)
     with pytest.raises(ValueError):
         store.save_pump("pump", 0)
+
+
+def test_ec_k_bounds_and_reasonableness(tmp_path: Path) -> None:
+    store = CalibrationStore(tmp_path / "calibration.yaml")
+    for k in (0.01, 20.0, float("nan")):
+        with pytest.raises(ValueError, match="factor k fuera de rango"):
+            store.save_ec(k=k, standard_us_cm=1413, voltage=1.0, t_c=25.0)
+
+    with pytest.raises(ValueError, match="patrón"):
+        store.save_ec(k=1.0, standard_us_cm=0.0, voltage=1.0, t_c=25.0)
+
+    now = datetime.now(UTC)
+    assert ECCalibration(1.0, 1413, 1.0, 25.0, now).k_is_reasonable()
+    assert not ECCalibration(0.05, 1413, 1.0, 25.0, now).k_is_reasonable()
+    assert not ECCalibration(float("inf"), 1413, 1.0, 25.0, now).k_is_reasonable()
 
 
 def test_yaml_syntax_error_does_not_crash_reads(tmp_path: Path) -> None:
