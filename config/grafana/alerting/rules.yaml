@@ -1,0 +1,63 @@
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: hidro
+    folder: Hidro
+    interval: 1m
+    rules:
+      - uid: hidro-sin-datos
+        title: hidro-core sin datos
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 900
+              to: 0
+            datasourceUid: hidro-influx
+            model:
+              refId: A
+              rawQuery: true
+              query: |
+                from(bucket: "hidro")
+                  |> range(start: -15m)
+                  |> filter(fn: (r) => r._measurement == "heartbeat")
+                  |> filter(fn: (r) => r._field == "value")
+                  |> last()
+          - refId: B
+            relativeTimeRange:
+              from: 900
+              to: 0
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              expression: A
+              reducer: count
+              settings:
+                mode: ""
+          - refId: C
+            relativeTimeRange:
+              from: 900
+              to: 0
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    type: lt
+                    params:
+                      - 1
+        for: 10m
+        noDataState: Alerting
+        execErrState: Alerting
+        labels:
+          severity: critical
+        annotations:
+          summary: hidro-core no está publicando datos
+          description: >-
+            No hay latidos de hidro-core en InfluxDB. Revisar el contenedor,
+            la alimentación y los logs de la Raspberry.
+        isPaused: false

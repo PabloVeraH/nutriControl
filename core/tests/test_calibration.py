@@ -1,0 +1,119 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+import pytest
+
+from hidro.calibration import CalibrationStore, PHCalibration
+
+
+def make_ph(**overrides: float) -> PHCalibration:
+    values = {
+        "v1": 2.0,
+        "ph1": 6.86,
+        "v2": 2.4,
+        "ph2": 4.0,
+        "t_cal": 25.0,
+    }
+    values.update(overrides)
+    return PHCalibration(
+        **values,  # type: ignore[arg-type]
+        calibrated_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+
+
+def test_slope_and_v7() -> None:
+    calibration = make_ph()
+    assert calibration.slope == pytest.approx((2.0 - 2.4) / (6.86 - 4.0))
+    assert calibration.v7 == pytest.approx(2.0 + calibration.slope * (7 - 6.86))
+    assert calibration.ph_from_voltage(2.0, 25.0) == pytest.approx(6.86, abs=1e-6)
+    assert calibration.ph_from_voltage(2.4, 25.0) == pytest.approx(4.0, abs=1e-6)
+
+
+def test_temperature_compensation_scales_slope() -> None:
+    calibration = make_ph()
+    hot = calibration.slope_at(35.0)
+    cold = calibration.slope_at(15.0)
+    assert abs(hot) > abs(cold)
+    assert hot == pytest.approx(calibration.slope * (308.15 / 298.15))
+    # sin compensación se usa la pendiente calibrada
+    assert calibration.ph_from_voltage(2.0, None) == pytest.approx(6.86)
+
+
+def test_slope_validation() -> None:
+    assert make_ph().slope_is_reasonable()
+    assert not make_ph(v1=1.0, v2=2.9).slope_is_reasonable()
+
+
+def test_calibration_age() -> None:
+    calibration = make_ph()
+    assert not calibration.is_old(calibration.calibrated_at + timedelta(days=10))
+    assert calibration.is_old(calibration.calibrated_at + timedelta(days=31))
+    assert calibration.age_days(calibration.calibrated_at + timedelta(days=2)) == pytest.approx(2.0)
+
+
+def test_store_roundtrip(tmp_path: Path) -> None:
+    store = CalibrationStore(tmp_path / "calibration.yaml")
+    assert store.ph() is None
+    assert store.ec() is None
+    assert store.flow() is None
+    assert store.pump_ml_per_min("pump_ph_down") is None
+
+    store.save_ph(
+        v1=2.0,
+        ph1=6.86,
+        v2=2.4,
+        ph2=4.0,
+        t_cal=21.5,
+        calibrated_at=datetime(2026, 2, 1, tzinfo=UTC),
+    )
+    ph = store.ph()
+    assert ph is not None
+    assert ph.t_cal == 21.5
+    assert ph.calibrated_at == datetime(2026, 2, 1, tzinfo=UTC)
+
+    store.save_ec(k=1.5, standard_us_cm=1413, voltage=1.2, t_c=24.0)
+    ec = store.ec()
+    assert ec is not None
+    assert ec.k == 1.5
+    assert ec.standard_us_cm == 1413
+
+    store.save_flow(pulses_per_liter=5900)
+    assert store.flow().pulses_per_liter == 5900  # type: ignore[union-attr]
+
+    store.save_pump("pump_ph_down", 12.4)
+    assert store.pump_ml_per_min("pump_ph_down") == 12.4
+
+
+def test_store_rejects_bad_slope(tmp_path: Path) -> None:
+    store = CalibrationStore(tmp_path / "calibration.yaml")
+    with pytest.raises(ValueError):
+        store.save_ph(v1=1.0, ph1=6.86, v2=1.0, ph2=4.0, t_cal=25.0)
+
+
+def test_pending_point(tmp_path: Path) -> None:
+    store = CalibrationStore(tmp_path / "calibration.yaml")
+    store.set_ph_pending(6.86, 2.01, 22.0)
+    pending = store.ph_pending()
+    assert pending is not None
+    assert pending.voltage == 2.01
+    store.clear_ph_pending()
+    assert store.ph_pending() is None
+
+
+def test_corrupt_file_returns_empty(tmp_path: Path) -> None:
+    path = tmp_path / "calibration.yaml"
+    path.write_text("ph: [no, es, un, mapa]", encoding="utf-8")
+    store = CalibrationStore(path)
+    assert store.ph() is None
+
+
+def test_store_rejects_negative_values(tmp_path: Path) -> None:
+    store = CalibrationStore(tmp_path / "calibration.yaml")
+    with pytest.raises(ValueError):
+        store.save_ec(k=0, standard_us_cm=1413, voltage=1.0, t_c=25.0)
+    with pytest.raises(ValueError):
+        store.save_flow(pulses_per_liter=0)
+    with pytest.raises(ValueError):
+        store.save_pump("pump", 0)

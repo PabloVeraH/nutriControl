@@ -1,0 +1,13 @@
+# Override para la Raspberry Pi: dispositivos y grupos del host.
+services:
+  hidro-core:
+    environment:
+      HIDRO_HARDWARE: hardware
+    devices:
+      - /dev/i2c-1:/dev/i2c-1
+      - /dev/gpiochip0:/dev/gpiochip0
+    group_add:
+      - "${GPIO_GID:?definir GPIO_GID en .env}"
+      - "${I2C_GID:?definir I2C_GID en .env}"
+    volumes:
+      - /sys:/sys:ro

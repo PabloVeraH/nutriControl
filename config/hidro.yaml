@@ -1,0 +1,127 @@
+mode: hardware
+read_interval_s: 30
+
+sensors:
+  - id: water_temp_1
+    type: ds18b20
+    serial: "28-000000000001"
+    offset_c: 0.0
+    mock:
+      base_c: 20.4
+      noise_c: 0.05
+
+  - id: water_temp_2
+    type: ds18b20
+    serial: "28-000000000002"
+    offset_c: 0.0
+    mock:
+      base_c: 20.7
+      noise_c: 0.05
+
+  - id: air
+    type: htu21d
+    i2c_bus: 1
+    address: 0x40
+    mock:
+      temp_c: 22.5
+      humidity: 58.0
+      noise: 0.2
+
+  - id: tank_level
+    type: float_switch
+    gpio: 17
+    low_when: 0
+    debounce_s: 10
+    pull: down
+    mock:
+      low: false
+
+  - id: flow
+    type: flow_hall
+    gpio: 27
+    pulses_per_liter: 5880
+    mock:
+      l_min: 1.4
+      noise_l_min: 0.03
+
+  - id: ph
+    type: ph_analog
+    adc:
+      address: 0x48
+      channel: 0
+      gain_v: 4.096
+      samples: 10
+    temperature_from: water_temp_1
+    mock:
+      ph: 5.9
+      noise: 0.02
+
+  - id: ec
+    type: tds_analog
+    adc:
+      address: 0x48
+      channel: 1
+      gain_v: 4.096
+      samples: 10
+    temperature_from: water_temp_1
+    power_switch: tds_power
+    settle_s: 2.0
+    mock:
+      ec: 1120
+      noise: 8
+
+outputs:
+  - id: tds_power
+    type: relay
+    gpio: 23
+    active_high: true
+
+  - id: pump_ph_down
+    type: peristaltic
+    gpio: 22
+    ml_per_min: null
+    max_on_s: 30
+    mock:
+      time_scale: 0.05
+
+ranges:
+  ph:
+    low: 5.5
+    high: 6.2
+    danger_low: 5.0
+    danger_high: 7.0
+  ec:
+    low: 1000
+    high: 1300
+  water_temp:
+    high_alert: 24
+  air_temp:
+    low_alert: 5
+    high_alert: 35
+  flow:
+    min_l_min: 0.3
+    alarm_after_s: 60
+
+monitoring:
+  stale_after_s: 300
+  ph_sustained_s: 1800
+  ec_low_sustained_s: 1800
+
+dosing:
+  enabled: false
+  dry_run: true
+  check_interval_s: 300
+  mix_wait_s: 600
+  ph_down_ml: 1.0
+  ph_up_ml: 1.0
+  nutrient_ml: 3.0
+  limits:
+    max_doses_per_hour: 3
+    max_ml_per_day:
+      pump_ph_down: 20
+
+alerts:
+  telegram:
+    enabled: true
+    repeat_critical_every_min: 15
+  daily_summary_at: "09:00"

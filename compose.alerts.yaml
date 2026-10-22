@@ -1,0 +1,7 @@
+# Override opcional: habilita el contacto y las reglas de alerta en Grafana.
+# Antes de usarlo hay que generar los archivos con scripts/render_grafana_alerting.py
+# (lo hace deploy.sh) y tener TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID en .env.
+services:
+  grafana:
+    volumes:
+      - ./data/grafana/alerting:/etc/grafana/provisioning/alerting:ro

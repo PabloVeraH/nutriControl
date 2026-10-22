@@ -1,0 +1,6 @@
+# Override para desarrollo en el PC: sin acceso a hardware.
+services:
+  hidro-core:
+    environment:
+      HIDRO_HARDWARE: mock
+      HIDRO_LOG_FORMAT: text

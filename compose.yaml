@@ -1,0 +1,99 @@
+name: hidro
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  hidro-core:
+    build:
+      context: ./core
+    image: hidro-core:local
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      TZ: ${TZ:-America/Santiago}
+      HIDRO_CONFIG: /app/config/hidro.yaml
+      HIDRO_DATA_DIR: /data
+      HIDRO_HARDWARE: ${HIDRO_HARDWARE:-hardware}
+      INFLUX_URL: http://influxdb:8086
+      INFLUX_ORG: ${INFLUX_ORG:-hidro}
+      INFLUX_BUCKET: ${INFLUX_BUCKET:-hidro}
+      INFLUX_TOKEN: ${INFLUX_TOKEN:?definir INFLUX_TOKEN en .env}
+    volumes:
+      - ./config:/app/config:ro
+      - hidro_data:/data
+    depends_on:
+      influxdb:
+        condition: service_healthy
+    mem_limit: 256m
+    stop_grace_period: 30s
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "python", "-m", "hidro.healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
+
+  influxdb:
+    image: influxdb:2.7
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-America/Santiago}
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: ${INFLUX_ADMIN_USER:-admin}
+      DOCKER_INFLUXDB_INIT_PASSWORD: ${INFLUX_ADMIN_PASSWORD:?definir INFLUX_ADMIN_PASSWORD en .env}
+      DOCKER_INFLUXDB_INIT_ORG: ${INFLUX_ORG:-hidro}
+      DOCKER_INFLUXDB_INIT_BUCKET: ${INFLUX_BUCKET:-hidro}
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: ${INFLUX_TOKEN:?definir INFLUX_TOKEN en .env}
+      DOCKER_INFLUXDB_INIT_RETENTION: ${INFLUX_RETENTION:-8760h}
+    volumes:
+      - influx_data:/var/lib/influxdb2
+      - influx_config:/etc/influxdb2
+    mem_limit: 768m
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "influx", "ping"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  grafana:
+    image: grafana/grafana-oss:11.3.0
+    restart: unless-stopped
+    depends_on:
+      influxdb:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ:-America/Santiago}
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?definir GRAFANA_ADMIN_PASSWORD en .env}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/provisioning/dashboards/hidro.json
+      INFLUX_ORG: ${INFLUX_ORG:-hidro}
+      INFLUX_BUCKET: ${INFLUX_BUCKET:-hidro}
+      INFLUX_TOKEN: ${INFLUX_TOKEN:?definir INFLUX_TOKEN en .env}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+    ports:
+      - "${GRAFANA_PORT:-3300}:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./config/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./config/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+    mem_limit: 384m
+    logging: *default-logging
+
+volumes:
+  hidro_data:
+  influx_data:
+  influx_config:
+  grafana_data:

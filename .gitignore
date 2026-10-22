@@ -1,0 +1,32 @@
+# Secretos y configuración local
+.env
+.env.*
+!.env.example
+
+# Datos locales (calibraciones, heartbeat, contadores)
+data/
+
+# Material de referencia local (no forma parte del proyecto)
+docs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+dist/
+build/
+
+# Docker / editores / sistema
+.docker/
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
