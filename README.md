@@ -395,10 +395,11 @@ sola vez, justo al arrancar, así que el flujo puede aparecer como `invalid`
 
 ### Fase 4: aire (HTU21D)
 
-El HTU21D debe ir soldado a una placa o módulo con pines; no uses cables sueltos
-sobre el chip. Alimenta a **3,3 V** (no 5 V), conecta GND, SDA a GPIO2 (pin 3) y
-SCL a GPIO3 (pin 5). La mayoría de los módulos incluye las resistencias de
-pull-up; si usas el chip suelto, añádelas. La dirección es `0x40`.
+Suelda primero la tira de 4 pines del módulo; un contacto sin soldar da tramas
+con CRC inválido intermitentes. Conexiones del módulo: `+` a **3,3 V** (pin 1,
+nunca 5 V), `-` a GND, `DA` (SDA) a GPIO2 (pin 3) y `CL` (SCL) a GPIO3 (pin 5).
+No hacen falta resistencias de pull-up: la Pi ya trae 1,8 kΩ en GPIO2 y GPIO3,
+y el módulo suele traer las suyas. La dirección es `0x40`.
 
 Con la Pi encendida y el bus I2C activo:
 
@@ -416,8 +417,8 @@ y comprueba que la humedad sube al soplar; al terminar deja el núcleo como esta
 bash scripts/phase4_check.sh air
 ```
 
-También se puede hacer a mano. Con el núcleo detenido para no interferir con el
-bus:
+También se puede hacer a mano. Hay que detener el núcleo porque `hidro read`
+abre todos los GPIO y el bus, y un segundo proceso no puede tomarlos:
 
 ```bash
 docker compose -f compose.yaml -f compose.hardware.yaml stop hidro-core
@@ -427,11 +428,14 @@ docker compose -f compose.yaml -f compose.hardware.yaml up -d hidro-core
 
 La lectura debe incluir `air_temp`, `air_humidity`, `air_vpd` (kPa) y
 `air_dew_point` (°C). La temperatura y la humedad deben ser coherentes con el
-ambiente; al soplar suavemente sobre el sensor, la humedad debe subir. El VPD se
-calcula con Tetens y el punto de rocío con Magnus. Si aparecen lecturas
-`invalid` con `CRC inválido`, revisa el cableado y la longitud de los cables
-I2C; el driver descarta la trama y el monitor avisa de que el sensor no tiene
-lectura.
+ambiente; al soplar suavemente sobre el sensor, la humedad debe subir. La humedad
+se compensa por temperatura según la hoja de datos (−0,15 %HR/°C respecto de
+25 °C, entre 0 y 80 °C); el VPD se calcula con Tetens y el punto de rocío con
+Magnus. El driver descarta las tramas con CRC inválido, las que no corresponden
+a la medición pedida (bit de estado) y las temperaturas fuera de −40 a 125 °C:
+una trama de ceros pasa el CRC pero daría −46,85 °C. En esos casos las cuatro
+magnitudes salen `invalid`; revisa el cableado y la longitud de los cables
+I2C. El monitor avisa de que el sensor no tiene lectura.
 
 ## Operación
 

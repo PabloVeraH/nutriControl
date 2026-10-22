@@ -383,6 +383,22 @@ sensor conectado y la comprobación física.
 - Rama `fase-4`, commits `62e6e51`, `cbee075` y `85c9913`, publicada en
   `origin/fase-4`.
 
+### Revisión
+
+**Rama:** `revision-fase-4` (desde `fase-4`). Cada corrección tiene una prueba
+que falla con el código anterior.
+
+| Hallazgo | Gravedad | Corrección |
+| --- | --- | --- |
+| Una trama de ceros `[0, 0, 0]` pasa el CRC y daba −46,85 °C: alerta falsa de aire frío con el bus trabado o SDA a masa | Alta | Se descartan temperaturas fuera del rango del sensor (−40 a 125 °C) |
+| No se comprobaba el bit de estado que indica si la trama es de temperatura o de humedad | Media | Una trama del tipo equivocado es `invalid` |
+| Las tramas de prueba (`0x6666`, `0x5F5C`) tenían el bit de estado al revés | Técnica | Tramas reales y vectores de CRC de la hoja de datos |
+| Faltaba la compensación de humedad por temperatura de la hoja de datos (hasta ±1,5 %HR entre 15 y 35 °C) | Media | −0,15 %HR/°C respecto de 25 °C, entre 0 y 80 °C |
+| En el fallo solo salían `temp` y `humidity` como `invalid`; `phase4_check.sh` reportaba además "no se publicó" VPD y rocío | Baja | Las cuatro magnitudes salen `invalid` (driver y simulador) |
+| Prueba del aliento: se soplaba antes de arrancar el contenedor de lectura (varios segundos) y la humedad bajaba antes de medir | Media | Se sopla al pulsar Enter y hasta que aparece la lectura |
+| Si `hidro read` fallaba, el script no mostraba el error | Baja | Muestra la salida completa |
+| README: pedía añadir pull-ups (la Pi ya trae 1,8 kΩ en GPIO2/3), no nombraba los pines `+ - DA CL` del módulo y atribuía la parada del núcleo al bus | Baja | Corregido |
+
 ## Fase 5 — pH y TDS (ADS1115)
 
 Pendiente de hardware y soluciones de calibración.
