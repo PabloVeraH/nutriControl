@@ -166,8 +166,9 @@ else
     problem "el relé queda activo o indeterminado tras SIGKILL"
     cat <<'EOF'
     Mitigación antes de conectar cargas:
-      - agregar una resistencia pull-down en la entrada IN del módulo, o
-      - usar el contacto NC para que la carga quede desconectada sin señal.
+      - agregar una resistencia pull-down de 10 kΩ entre IN y GND del módulo.
+      - conectar la carga siempre en COM-NO, nunca en NC (NC queda cerrado
+        con el relé en reposo).
     Documenta el resultado en PROGRESS.md.
 EOF
   fi

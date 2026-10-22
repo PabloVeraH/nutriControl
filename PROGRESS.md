@@ -278,6 +278,38 @@ cableado y la validación física.
 
 - Rama `fase-3`, commits `db6fb28` y `bab40a5`, publicada en `origin/fase-3`.
 
+## Revisión de las fases 0–2
+
+**Fecha:** 2026-10-22 · **Rama:** `revision-fases-0-2` (desde `fase-3`)
+
+Revisión del código, las pruebas y la documentación de las fases 0 a 2. Cada
+corrección tiene una prueba que falla con el código anterior.
+
+| Hallazgo | Gravedad | Corrección |
+| --- | --- | --- |
+| `flow_hall` asignaba `when_pressed`, que no existe en `DigitalInputDevice`; gpiozero lo rechaza y el núcleo no arrancaba en modo hardware (también `read`, `switch` y `phase2_check.sh`) | Crítica | Usa `when_activated` |
+| Las pruebas usaban fakes que aceptan cualquier atributo, por eso no se detectó | Técnica | `gpiozero` en `dev`; `test_gpio_hardware.py` usa `MockFactory` |
+| Con `pull: up` el flotador leía `value`, que gpiozero invierte: `low_when` quedaba al revés | Alta | Se lee el nivel físico (`pin.state`) |
+| `pull: none` activaba el pull-down interno | Media | Entrada flotante (`pull_up=None`, `active_state=True`) |
+| Si el primer envío a Telegram fallaba, la alerta no se reintentaba nunca (incluida la crítica de flujo) | Alta | Se reintenta en cada ciclo hasta entregarla |
+| Los errores de httpx incluyen la URL con el token del bot y se escribían en el log | Alta (seguridad) | El token se reemplaza por `<token>` |
+| La dosificación aceptaba lecturas `suspect` (EC sin calibrar, pH sin temperatura), contra el plan 7.2 | Alta | Solo dosifica con calidad `ok` |
+| Sin lectura de flujo o flotador no había alarma y la dosificación no se bloqueaba | Alta | Bloquea si falta una lectura reciente de flujo o flotador |
+| `hidro switch` como PID 1 de `docker compose run` ignoraba SIGTERM: `docker stop` terminaba en SIGKILL con el relé encendido | Media | SIGTERM se trata como Ctrl+C y el `finally` apaga el relé |
+| `hidro switch --seconds 0` o negativo terminaba con traceback | Baja | Se rechaza con código 2 |
+| GPIO ocupado (núcleo corriendo) daba un traceback de gpiozero; `hidro run` no capturaba errores de hardware al arrancar | Media | `DriverError` con la sugerencia de detener `hidro-core`; `run` sale con código 3 |
+| SIGTERM no cortaba una dosis en curso (hasta `max_on_s` = 30 s, igual que `stop_grace_period`) | Media | Las bombas comparten el evento de parada del ciclo |
+| README y `phase2_check.sh` sugerían la carga en `NC` como mitigación, que la deja energizada con el relé en reposo | Alta (eléctrica) | Pull-down de 10 kΩ en `IN` y carga siempre en `COM`–`NO` |
+| Código muerto: `AlertManager(clock=)`, `tds_analog.build_from_config`, `FlowHallSensor.load_total` | Baja | Eliminado |
+
+Pendiente, sin cambios en esta revisión:
+
+- La dosificación busca las mediciones por nombre fijo (`ph`, `ec`) y las bombas
+  por id fijo (`pump_ph_down`…); otro id en el YAML las deja sin efecto. Se
+  revisa en la Fase 6.
+- Una excepción fuera de los drivers (monitor, alertas) termina el ciclo; el
+  `finally` apaga las salidas y Docker reinicia el contenedor.
+
 ## Fase 4 — Aire (HTU21D)
 
 Pendiente de hardware.

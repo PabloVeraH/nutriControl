@@ -172,7 +172,10 @@ mypy src
 
 Las pruebas cubren fórmulas, calibración, reglas de dosificación y límites de
 seguridad. `smbus2` no funciona en Windows: los drivers reales solo se importan
-bajo demanda; en el PC se usa el modo mock.
+bajo demanda; en el PC se usa el modo mock. Las dependencias de desarrollo
+incluyen `gpiozero` (sin `lgpio`): `tests/test_gpio_hardware.py` ejercita el
+camino de hardware con su `MockFactory`, así un uso incorrecto de la API falla
+en el PC y no recién en la Pi.
 
 ## Despliegue en la Raspberry Pi
 
@@ -294,6 +297,10 @@ El valor de `low_when` depende de la orientación física del flotador:
 - `low_when: 0` si entrega `0` cuando el estanque está bajo.
 - `low_when: 1` si la lógica está invertida.
 
+`low_when` se compara con el nivel físico del pin (el mismo que muestra
+`pinctrl get 17`), sea cual sea `pull`. `pull: down` coincide con la
+resistencia externa de 10 kΩ a GND; `pull: none` deja solo la externa.
+
 Para comprobarlo hay que detener el núcleo: los GPIO quedan tomados por
 `hidro-core` y un segundo proceso no puede abrirlos.
 
@@ -331,9 +338,12 @@ flotador, acciona `tds_power` y guía las pruebas de robustez:
 - **SIGTERM:** `docker compose stop hidro-core` con `tds_power` energizado debe
   apagar todas las salidas.
 - **SIGKILL:** `docker compose kill hidro-core` mientras `tds_power` está
-  energizado. Si el relé queda activo o indeterminado, hay que añadir una
-  resistencia pull-down en la entrada del módulo o usar el contacto NC antes de
-  conectar cargas. El resultado se registra en `PROGRESS.md`.
+  energizado. Al liberar el GPIO, la Pi normalmente lo deja como entrada sin
+  excitación (esta prueba lo confirma): si el relé queda activo o indeterminado, hay que añadir una resistencia
+  pull-down (10 kΩ de `IN` a GND) en la entrada del módulo antes de conectar
+  cargas. La carga va siempre en `COM`–`NO`: **nunca en `NC`**, que queda
+  cerrado justamente cuando el relé está en reposo. El resultado se registra en
+  `PROGRESS.md`.
 
 ### Fase 3: flujómetro
 
