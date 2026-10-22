@@ -630,8 +630,8 @@ cultivo antes de reanudar. El reset no usa GPIO, así que se ejecuta con el
 núcleo en marcha y este lo ve en su siguiente evaluación:
 
 ```bash
-docker compose -f compose.yaml -f compose.hardware.yaml exec hidro-core   hidro safety reset pump_ph_down   # solo esa bomba
-docker compose -f compose.yaml -f compose.hardware.yaml exec hidro-core   hidro safety reset                # todas las bombas
+docker compose -f compose.yaml -f compose.hardware.yaml exec hidro-core hidro safety reset pump_ph_down   # solo esa bomba
+docker compose -f compose.yaml -f compose.hardware.yaml exec hidro-core hidro safety reset                # todas las bombas
 ```
 
 En `dry_run` el pH no cambia y la misma regla se repite, así que el límite se
