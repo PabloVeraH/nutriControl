@@ -157,6 +157,10 @@ física requiere acceso SSH a la Pi y las sondas conectadas.
 Los comandos concretos están en el README, sección
 "Despliegue en la Raspberry Pi".
 
+### Publicación
+
+- Rama `fase-1`, commit `09459e9`, publicada en `origin/fase-1`.
+
 ## Fase 2 — Flotador y relés
 
 Pendiente de hardware.
