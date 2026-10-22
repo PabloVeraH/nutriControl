@@ -8,7 +8,6 @@ from datetime import UTC, datetime
 from typing import Any
 
 from hidro.calibration import CalibrationStore
-from hidro.config import TDSAnalogConfig
 from hidro.drivers.base import DriverError, LatestReadings, Switch, invalid_measurement
 from hidro.logging_setup import get_logger
 from hidro.model import Measurement, Quality
@@ -134,26 +133,3 @@ class TDSAnalogSensor:
                 self.power_switch.off()
             except Exception:
                 logger.warning("no se pudo apagar %s", self.id, exc_info=True)
-
-
-def build_from_config(
-    config: TDSAnalogConfig,
-    *,
-    adc: Any,
-    calibration: CalibrationStore,
-    latest: LatestReadings,
-    power_switch: Switch | None,
-) -> TDSAnalogSensor:
-    return TDSAnalogSensor(
-        config.id,
-        adc,
-        calibration,
-        latest,
-        channel=config.adc.channel,
-        gain_v=config.adc.gain_v,
-        samples=config.adc.samples,
-        temperature_from=config.temperature_from,
-        power_switch=power_switch,
-        settle_s=config.settle_s,
-        tds_factor=config.tds_factor,
-    )

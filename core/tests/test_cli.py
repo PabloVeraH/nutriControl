@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import signal
 from argparse import Namespace
 from pathlib import Path
 from types import SimpleNamespace
@@ -107,15 +108,50 @@ def test_switch_reports_unknown_output(
     assert "no existe la salida" in capsys.readouterr().err
 
 
+
+def test_switch_turns_off_on_sigterm(monkeypatch: pytest.MonkeyPatch) -> None:
+    relay = FakeSwitch("relay")
+    app = FakeApp({"relay": relay})
+    install_app(monkeypatch, app)
+    previous = signal.getsignal(signal.SIGTERM)
+
+    def terminated(_seconds: float) -> None:
+        # docker stop envía SIGTERM; el manejador debe convertirlo en interrupción.
+        handler = signal.getsignal(signal.SIGTERM)
+        assert callable(handler)
+        handler(signal.SIGTERM, None)
+
+    monkeypatch.setattr(cli.time, "sleep", terminated)
+
+    assert cli.cmd_switch(switch_args(seconds=60)) == 0
+
+    assert relay.events == ["on", "off"]
+    assert signal.getsignal(signal.SIGTERM) is previous
+
+
+@pytest.mark.parametrize("seconds", [0.0, -1.0])
+def test_switch_rejects_non_positive_seconds(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], seconds: float
+) -> None:
+    relay = FakeSwitch("relay")
+    app = FakeApp({"relay": relay})
+    install_app(monkeypatch, app)
+
+    assert cli.cmd_switch(switch_args(seconds=seconds)) == 2
+
+    assert relay.events == []
+    assert "--seconds" in capsys.readouterr().err
+
+
 class FakeFlowDevice:
     def __init__(self) -> None:
-        self.when_pressed = None
+        self.when_activated = None
         self.closed = False
 
     def pulse(self, count: int = 1) -> None:
         for _ in range(count):
-            assert self.when_pressed is not None
-            self.when_pressed()
+            assert self.when_activated is not None
+            self.when_activated()
 
     def close(self) -> None:
         self.closed = True

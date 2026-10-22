@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import signal
 import sys
 import time
 from datetime import UTC, datetime
@@ -218,6 +219,10 @@ def cmd_flow(args: argparse.Namespace) -> int:
 def cmd_switch(args: argparse.Namespace) -> int:
     from hidro.bootstrap import build_app
 
+    if args.state == "on" and args.seconds <= 0:
+        print("--seconds debe ser positivo", file=sys.stderr)
+        return 2
+
     settings = _settings(verbose=True)
     config = load_config(settings.config_path, settings.mode_override)
     app = build_app(settings, config)
@@ -236,14 +241,18 @@ def cmd_switch(args: argparse.Namespace) -> int:
             output.off()
             print(f"{args.id}: apagado")
             return 0
-        output.on()
-        print(f"{args.id}: encendido por {args.seconds:g} s (Ctrl+C para cortar)")
+        # Como PID 1 de `docker compose run`, sin manejador el proceso ignora
+        # SIGTERM y Docker termina con SIGKILL: el relé quedaría sin apagar.
+        previous = signal.signal(signal.SIGTERM, signal.default_int_handler)
         try:
+            output.on()
+            print(f"{args.id}: encendido por {args.seconds:g} s (Ctrl+C para cortar)")
             time.sleep(args.seconds)
         except KeyboardInterrupt:
             pass
         finally:
             output.off()
+            signal.signal(signal.SIGTERM, previous)
             print(f"{args.id}: apagado")
         return 0
     finally:
@@ -308,8 +317,6 @@ def cmd_alert_test(_args: argparse.Namespace) -> int:
 def cmd_safety_reset(args: argparse.Namespace) -> int:
     settings = _settings(verbose=True)
     config = load_config(settings.config_path, settings.mode_override)
-    store = CalibrationStore(settings.data_dir / "calibration.yaml")
-    del store  # se conserva la calibración; solo se reinicia la seguridad
     guard = SafetyGuard(settings.data_dir / "safety.json", config.dosing.limits)
     guard.reset(args.pump)
     print(f"seguridad reiniciada: {args.pump or 'todas las bombas'}")
