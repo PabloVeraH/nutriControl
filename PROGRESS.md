@@ -585,7 +585,10 @@ y dosificación".
 
 ### Publicación
 
-- Pendiente de publicar `fase-6`.
+- Rama `fase-6`, commit `fae9c3c` (`feat(fase-6): calibrar bombas y persistir
+  bloqueos de dosificación`), publicada en `origin/fase-6`.
+- La calibración física, la semana en `dry_run` y el punto de control siguen
+  pendientes de hardware y de la aprobación explícita del usuario.
 
 ## Fase 7 — Operación
 
