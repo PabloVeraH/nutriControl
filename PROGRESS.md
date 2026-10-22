@@ -10,7 +10,7 @@ siguiente fase sin cerrar el punto de control humano correspondiente.
 | 0 — Esqueleto en el PC (mock) | Implementada y verificada; checkpoint de Telegram pendiente | `fase-0` |
 | 1 — Raspberry + sondas de temperatura | En curso; software y documentación listos, validación física pendiente | `fase-1` |
 | 2 — Flotador y relés | En curso; drivers, CLI y verificación listos, validación física pendiente | `fase-2` |
-| 3 — Flujómetro | Pendiente | — |
+| 3 — Flujómetro | En curso; driver y calibración listos, validación física pendiente | `fase-3` |
 | 4 — Aire (HTU21D) | Pendiente | — |
 | 5 — pH y TDS (ADS1115) | Pendiente | — |
 | 6 — Bomba y dosificación | Pendiente | — |
@@ -218,7 +218,65 @@ la prueba física.
 
 ## Fase 3 — Flujómetro
 
-Pendiente de hardware (resistencias de 10 kΩ y 20 kΩ).
+**Estado:** en curso. Driver, calibración y documentación listos; falta el
+cableado y la validación física.
+**Rama:** `fase-3` · **Fecha:** 2026-10-22
+
+### Hecho
+
+- `flow_hall`: contador de pulsos protegido, caudal en L/min, total acumulado
+  persistente en `/data` y cierre ordenado.
+- La calibración guardada en `/data/calibration.yaml` reemplaza el
+  `pulses_per_liter` del YAML al construir el driver.
+- `calculate_pulses_per_liter`: valida litros positivos y pulsos mayores que
+  cero.
+- CLI `hidro calibrate flow [--liters N] [--id ID]`: guía la prueba con un
+  recipiente graduado, cuenta los pulsos reales y guarda la calibración. Exige
+  modo hardware y no guarda nada si no hubo pulsos.
+- CLI `hidro flow [--seconds N]`: mide el caudal en una ventana corta con el
+  núcleo detenido, para comprobar el cableado antes de la calibración.
+- El flujómetro usa `bounce_time=None`; con el filtro de 20 ms del flotador se
+  perderían pulsos a caudales altos. El parámetro quedó configurable en
+  `RuntimeContext.gpio_input`.
+- La alarma crítica de flujo ya estaba implementada y probada: se activa tras
+  `alarm_after_s` por debajo de `min_l_min`, bloquea la dosificación, se repite
+  cada 15 min y se recupera al normalizar.
+- README con el divisor de tensión, la calibración y la prueba de alarma.
+- Pruebas nuevas del cálculo de pulsos, del CLI de calibración y del
+  `bounce_time` del flujómetro.
+
+### Bloqueos
+
+- Persisten el acceso SSH sin clave y la falta de hardware de las fases 1, 2 y 3.
+- No hay flujómetro ni resistencias de 10 kΩ y 20 kΩ conectados.
+- Telegram sigue sin configurar, así que no se puede validar la alerta real.
+
+### Tareas
+
+- [x] Driver, persistencia y pruebas.
+- [x] CLI `hidro calibrate flow`.
+- [x] CLI `hidro flow` para verificar el caudal.
+- [x] Corrección del antirrebote para pulsos.
+- [x] Documentación.
+- [ ] Cablear el YF-S401 con el divisor y verificar que la señal no supere 3,3 V.
+- [ ] Ver caudal con agua o soplando.
+- [ ] Calibrar con 1 L y registrar los pulsos/L obtenidos.
+- [ ] Cortar el flujo y recibir la alerta crítica en Telegram.
+- [ ] Confirmar que la dosificación queda bloqueada durante la alarma.
+
+### Punto de control humano
+
+1. El GPIO27 recibe una señal de 0–3,3 V, nunca 5 V.
+2. `hidro flow` muestra un caudal coherente al abrir el flujo.
+3. La calibración con 1 L guarda un valor de pulsos/L y se conserva tras
+   reiniciar el contenedor.
+4. Al cortar el flujo, llega la alerta crítica en Telegram tras el tiempo
+   configurado.
+5. La dosificación permanece bloqueada mientras la alarma está activa.
+
+### Publicación
+
+- Rama `fase-3`, pendiente de publicar al cerrar este registro.
 
 ## Fase 4 — Aire (HTU21D)
 

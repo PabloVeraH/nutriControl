@@ -4,7 +4,7 @@ Sistema de control y monitoreo para un cultivo hidropónico NFT. El núcleo
 (`hidro-core`) lee sensores, publica en InfluxDB, evalúa reglas de alarma y
 dosificación, y avisa por Telegram. Grafana muestra el estado del cultivo.
 
-Estado actual: **Fase 0** verificada en simulación. Las fases 1 y 2 tienen el
+Estado actual: **Fase 0** verificada en simulación. Las fases 1, 2 y 3 tienen el
 software y la verificación listos, pendientes del hardware y del acceso a la Pi.
 El detalle de lo hecho, lo verificado y los puntos de control está en
 [`PROGRESS.md`](PROGRESS.md). El diseño completo está en
@@ -97,6 +97,8 @@ Dentro del contenedor (o con el paquete instalado en el host):
 | --- | --- |
 | `hidro config-check` | Valida `config/hidro.yaml` |
 | `hidro read [--json]` | Lee todos los sensores una vez |
+| `hidro flow [--seconds N]` | Mide el caudal durante N segundos |
+| `hidro calibrate flow [--liters N]` | Calibra los pulsos por litro del flujómetro |
 | `hidro switch <id> on\|off [--seconds N]` | Acciona un relé (por defecto 5 s) |
 | `hidro pump <id> --ml N [--yes]` | Dosifica con una bomba peristáltica |
 | `hidro alert-test` | Envía un mensaje de prueba a Telegram |
@@ -332,6 +334,42 @@ flotador, acciona `tds_power` y guía las pruebas de robustez:
   energizado. Si el relé queda activo o indeterminado, hay que añadir una
   resistencia pull-down en la entrada del módulo o usar el contacto NC antes de
   conectar cargas. El resultado se registra en `PROGRESS.md`.
+
+### Fase 3: flujómetro
+
+Cablea el YF-S401 según la sección 4.4: rojo a 5 V, negro a GND, amarillo al
+divisor de 10 kΩ y 20 kΩ, y el punto medio a GPIO27. El divisor es obligatorio:
+el GPIO no admite 5 V. Verifica con un multímetro que la señal no supere 3,3 V.
+
+Con el flujo detenido, calibra con un recipiente graduado. El CLI cuenta los
+pulsos reales y guarda el resultado en `/data/calibration.yaml`; el valor de
+`pulses_per_liter` del YAML queda como referencia:
+
+```bash
+docker compose -f compose.yaml -f compose.hardware.yaml stop hidro-core
+docker compose -f compose.yaml -f compose.hardware.yaml run --rm --no-deps \
+  hidro-core calibrate flow --liters 1
+```
+
+El comando pide confirmación para empezar y para terminar. Vierte exactamente
+1 L (o el valor de `--liters`) y pulsa Enter. Si no cuenta pulsos, revisa el
+divisor, la masa común y que el GPIO sea 27.
+
+Antes de reiniciar, verifica el caudal. Abre el flujo y pulsa Enter:
+
+```bash
+docker compose -f compose.yaml -f compose.hardware.yaml run --rm --no-deps \
+  hidro-core flow --seconds 5
+docker compose -f compose.yaml -f compose.hardware.yaml up -d hidro-core
+```
+
+El comando mide durante 5 s y muestra los L/min y el volumen contado. Con el
+flujo abierto debe superar `min_l_min` (0,3 L/min). La alarma crítica se activa
+tras `alarm_after_s` (60 s) sin caudal suficiente; requiere Telegram configurado,
+se repite cada 15 min y bloquea la dosificación.
+
+El flujómetro usa `bounce_time=None` para no perder pulsos a caudales altos; el
+filtro de 20 ms se reserva para el flotador.
 
 ## Operación
 
