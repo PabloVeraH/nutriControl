@@ -380,7 +380,8 @@ sensor conectado y la comprobación física.
 
 ### Publicación
 
-- Rama `fase-4`, pendiente de publicar al cerrar este registro.
+- Rama `fase-4`, commits `62e6e51`, `cbee075` y `85c9913`, publicada en
+  `origin/fase-4`.
 
 ## Fase 5 — pH y TDS (ADS1115)
 
