@@ -24,8 +24,18 @@ done < .env
 
 : "${DEPLOY_HOST:?definir DEPLOY_HOST en .env}"
 : "${DEPLOY_PATH:?definir DEPLOY_PATH en .env}"
-: "${TELEGRAM_BOT_TOKEN:?definir TELEGRAM_BOT_TOKEN en .env}"
-: "${TELEGRAM_CHAT_ID:?definir TELEGRAM_CHAT_ID en .env}"
+
+# Las alertas de Grafana necesitan el bot de Telegram. En las primeras fases de
+# hardware se puede desplegar sin ellas; en producción conviene exigirlas.
+ALERTS=1
+if [[ -z "${TELEGRAM_BOT_TOKEN:-}" || -z "${TELEGRAM_CHAT_ID:-}" ]]; then
+  if [[ "${DEPLOY_REQUIRE_ALERTS:-0}" == "1" ]]; then
+    echo "Faltan TELEGRAM_BOT_TOKEN y/o TELEGRAM_CHAT_ID y DEPLOY_REQUIRE_ALERTS=1." >&2
+    exit 1
+  fi
+  echo "Aviso: sin Telegram; se despliega sin las alertas de Grafana." >&2
+  ALERTS=0
+fi
 
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 REMOTE_URL="$(git remote get-url origin)"
@@ -42,7 +52,7 @@ fi
 echo "Desplegando $BRANCH en $DEPLOY_HOST:$DEPLOY_PATH"
 
 ssh "$DEPLOY_HOST" \
-  "DEPLOY_PATH='$DEPLOY_PATH' BRANCH='$BRANCH' REMOTE_URL='$REMOTE_URL' bash -s" <<'REMOTE_SCRIPT'
+  "DEPLOY_PATH='$DEPLOY_PATH' BRANCH='$BRANCH' REMOTE_URL='$REMOTE_URL' ALERTS='$ALERTS' bash -s" <<'REMOTE_SCRIPT'
 set -euo pipefail
 
 DEPLOY_PATH="${DEPLOY_PATH/#\~/$HOME}"
@@ -67,17 +77,12 @@ if [[ ! -f .env ]]; then
   exit 1
 fi
 
-python3 scripts/render_grafana_alerting.py
+COMPOSE_FILES=(-f compose.yaml -f compose.hardware.yaml)
+if [[ "${ALERTS:-1}" == "1" ]]; then
+  python3 scripts/render_grafana_alerting.py
+  COMPOSE_FILES+=(-f compose.alerts.yaml)
+fi
 
-docker compose \
-  -f compose.yaml \
-  -f compose.hardware.yaml \
-  -f compose.alerts.yaml \
-  up -d --build
-
-docker compose \
-  -f compose.yaml \
-  -f compose.hardware.yaml \
-  -f compose.alerts.yaml \
-  ps
+docker compose "${COMPOSE_FILES[@]}" up -d --build
+docker compose "${COMPOSE_FILES[@]}" ps
 REMOTE_SCRIPT

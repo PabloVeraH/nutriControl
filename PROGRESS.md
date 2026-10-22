@@ -7,8 +7,8 @@ siguiente fase sin cerrar el punto de control humano correspondiente.
 
 | Fase | Estado | Rama |
 | --- | --- | --- |
-| 0 — Esqueleto en el PC (mock) | Implementada; falta confirmación de Telegram | `fase-0` |
-| 1 — Raspberry + sondas de temperatura | Pendiente (sin hardware) | — |
+| 0 — Esqueleto en el PC (mock) | Implementada y verificada; checkpoint de Telegram pendiente | `fase-0` |
+| 1 — Raspberry + sondas de temperatura | En curso; software y documentación listos, validación física pendiente | `fase-1` |
 | 2 — Flotador y relés | Pendiente | — |
 | 3 — Flujómetro | Pendiente | — |
 | 4 — Aire (HTU21D) | Pendiente | — |
@@ -53,7 +53,7 @@ siguiente fase sin cerrar el punto de control humano correspondiente.
 | `ruff check src tests` | Sin hallazgos |
 | `mypy src` | Sin errores |
 | `docker compose ... up -d --build` | 3 contenedores levantan; núcleo `healthy` |
-| Mediaciones en InfluxDB | `air_temp`, `air_humidity`, `air_dew_point`, `air_vpd`, `water_temp_1`, `water_temp_2`, `ph`, `ec`, `ec_ppm`, `flow`, `tank_level_low`, `heartbeat` |
+| Mediciones en InfluxDB | `air_temp`, `air_humidity`, `air_dew_point`, `air_vpd`, `water_temp_1`, `water_temp_2`, `ph`, `ec`, `ec_ppm`, `flow`, `tank_level_low`, `heartbeat` |
 | Latido | Punto `heartbeat` con `mode=mock` y ciclo creciente cada 30 s |
 | Dashboard Grafana | `uid=hidro` aprovisionado y visible en el puerto 3300 |
 | Datasource Grafana | `OK`, 3 buckets detectados |
@@ -64,7 +64,17 @@ Grafana (ahora se montan los subdirectorios), el tipado del `chatid` de
 Telegram (se genera el YAML con comillas) y el arranque de Grafana sin token
 (las alertas son un override opcional).
 
+### Publicación
+
+- Rama `fase-0`, commit `a31c9a2` (`feat(fase-0): esqueleto del sistema NFT en
+  modo simulado`), publicado en `origin/fase-0`.
+- `main` todavía no existe: se creará al cerrar el checkpoint.
+
 ### Punto de control humano (pendiente)
+
+Estado al 2026-10-22: `TELEGRAM_BOT_TOKEN` y `TELEGRAM_CHAT_ID` siguen vacíos;
+no se ha confirmado la recepción de una alerta real. El resto de la Fase 0 está
+verificado.
 
 1. Crear el bot con @BotFather y obtener `TELEGRAM_BOT_TOKEN`.
 2. Obtener `TELEGRAM_CHAT_ID`.
@@ -86,17 +96,66 @@ Telegram (se genera el YAML con comillas) y el arranque de Grafana sin token
   evitar que Grafana interprete el chat id como número.
 - `docs/` no se versiona.
 
-### Pendiente antes de la Fase 1
+### Pendiente para cerrar la Fase 0
 
-- Confirmar la preparación de la Pi: Docker, grupos `gpio`/`i2c`, I2C y 1-Wire
-  activados, GIDs en `.env`.
-- Obtener los seriales `28-…` de las dos sondas DS18B20.
-- Copiar `.env` a la Pi y verificar credenciales de git para el repositorio
-  privado.
+- Confirmar el checkpoint de Telegram (token, chat id y mensaje de prueba).
 
 ## Fase 1 — Raspberry + sondas de temperatura
 
-Pendiente de hardware.
+**Estado:** en curso. Código, documentación y diagnóstico listos; la validación
+física requiere acceso SSH a la Pi y las sondas conectadas.
+**Rama:** `fase-1` · **Fecha:** 2026-10-22
+
+### Hecho
+
+- Driver real `ds18b20`: lee `w1_slave`, valida CRC, aplica offset y descarta
+  lecturas de 85 °C. Probado con un árbol sysfs falso para lectura válida,
+  offset, CRC inválida, 85 °C, trama incompleta, dispositivo ausente y serial
+  vacío.
+- `compose.hardware.yaml` fuerza `HIDRO_HARDWARE=hardware`, expone
+  `/dev/i2c-1` y `/dev/gpiochip0`, monta `/sys` en solo lectura y aplica
+  `GPIO_GID`/`I2C_GID`.
+- README con la preparación del host, el `.env` de la Pi, el despliegue y la
+  secuencia de las sondas.
+- `scripts/pi_check.sh`: diagnóstico sin efectos secundarios (modelo, RAM,
+  disco, Docker, grupos, GIDs declarados frente a reales, dispositivos,
+  overlays de I2C/1-Wire, sondas con temperatura, `i2cdetect`, puerto 3300).
+- `deploy.sh` permite desplegar sin alertas mientras Telegram no esté
+  configurado; `DEPLOY_REQUIRE_ALERTS=1` las exige.
+
+### Bloqueos
+
+- El acceso SSH no interactivo a la Pi responde
+  `Permission denied (publickey,password)`; falta instalar la clave pública del
+  PC (`ssh-copy-id`).
+- `GPIO_GID` e `I2C_GID` del `.env` son provisionales (997/998); hay que
+  reemplazarlos por los valores reales de la Pi.
+- No hay sondas DS18B20 conectadas; faltan los seriales `28-…`.
+- Por lo anterior no se ejecutó el primer despliegue ni `pi_check.sh` en la Pi.
+
+### Tareas
+
+- [x] Driver real y pruebas.
+- [x] Preparación del host documentada.
+- [x] Diagnóstico automatizado.
+- [x] Despliegue sin alertas permitido.
+- [ ] Instalar la clave SSH del PC en la Pi.
+- [ ] Ejecutar `bash scripts/pi_check.sh` y corregir fallas.
+- [ ] Copiar `.env` a la Pi y ajustar los GIDs.
+- [ ] Primer despliegue con `./deploy.sh`.
+- [ ] Conectar las sondas, anotar los seriales y actualizar `config/hidro.yaml`.
+- [ ] Verificar la temperatura desde el contenedor y en Grafana.
+
+### Punto de control humano
+
+1. `bash scripts/pi_check.sh` termina sin fallas.
+2. Los tres servicios quedan `healthy` tras el despliegue.
+3. `hidro read` muestra las dos temperaturas de agua con `quality=ok`.
+4. Al calentar una sonda con la mano, la temperatura sube en Grafana.
+5. El usuario confirma los seriales usados en `config/hidro.yaml`.
+
+Los comandos concretos están en el README, sección
+"Despliegue en la Raspberry Pi".
 
 ## Fase 2 — Flotador y relés
 

@@ -1,4 +1,4 @@
-# hidro
+# nutriControl
 
 Sistema de control y monitoreo para un cultivo hidropónico NFT. El núcleo
 (`hidro-core`) lee sensores, publica en InfluxDB, evalúa reglas de alarma y
@@ -174,9 +174,12 @@ bajo demanda; en el PC se usa el modo mock.
 ## Despliegue en la Raspberry Pi
 
 La Pi comparte equipo con otros servicios. El stack está limitado a 256 + 768 +
-384 MB y Grafana usa el puerto 3300.
+384 MB y Grafana usa el puerto 3300. La imagen se construye en la propia Pi
+(arm64), así que el primer build puede tardar varios minutos.
 
-Preparación del host (una vez):
+### Preparación del host (una vez)
+
+Sobre Raspberry Pi OS de 64 bits, con acceso SSH:
 
 ```bash
 sudo apt update && sudo apt full-upgrade -y
@@ -187,40 +190,94 @@ sudo raspi-config nonint do_onewire 0
 sudo reboot
 ```
 
-Después del reinicio, verifica y anota los GIDs:
+Después del reinicio, comprueba que Docker funciona sin `sudo` y que los buses
+están activos:
 
 ```bash
+docker run --rm hello-world
 getent group gpio i2c
 ls -l /dev/i2c-1 /dev/gpiochip0
 ls /sys/bus/w1/devices/
 ```
 
-Completa en el `.env` de la Pi `GPIO_GID`, `I2C_GID`, `DEPLOY_HOST` y
-`DEPLOY_PATH`. La primera vez hay que copiar el `.env` a la Pi (no está en git):
+### Diagnóstico del host
+
+Clona el repositorio en la Pi y ejecuta el diagnóstico (no modifica nada):
+
+```bash
+cd ~/nutriControl
+bash scripts/pi_check.sh
+```
+
+Revisa el modelo, la RAM, el disco, Docker, los grupos, los GIDs declarados en
+`.env` frente a los reales, `/dev/i2c-1`, `/dev/gpiochip0`, los overlays de I2C
+y 1-Wire, las sondas DS18B20 con su temperatura, `i2cdetect` y el puerto 3300.
+El script termina con código distinto de cero si algo crítico falla.
+
+### `.env` en la Pi
+
+El `.env` no se versiona. La primera vez cópialo desde el PC:
 
 ```bash
 scp .env usuario@host:~/nutriControl/.env
 ```
 
-Despliegue:
+En la Pi completa `GPIO_GID` e `I2C_GID` con los valores reales de
+`getent group gpio i2c`, además de los secretos de InfluxDB, Grafana y
+Telegram. En el PC, `DEPLOY_HOST` y `DEPLOY_PATH` indican el destino SSH.
+Para que `deploy.sh` no pida contraseña:
+
+```bash
+ssh-copy-id usuario@host
+```
+
+### Despliegue
 
 ```bash
 ./deploy.sh
 ```
 
 El script exige un árbol limpio, empuja la rama actual, entra por SSH, clona el
-repositorio si falta, hace `git pull`, genera las alertas de Grafana y levanta:
+repositorio si falta, hace `git pull`, genera las alertas de Grafana si hay
+Telegram y levanta:
 
 ```bash
 docker compose -f compose.yaml -f compose.hardware.yaml -f compose.alerts.yaml up -d --build
 ```
 
-Requiere `TELEGRAM_BOT_TOKEN` y `TELEGRAM_CHAT_ID` porque el stack de la Pi
-siempre aprovisiona las alertas. Variables útiles: `DEPLOY_SKIP_PUSH=1` (no
-empujar) y `DEPLOY_ALLOW_DIRTY=1` (permitir cambios sin commitear).
+Si faltan `TELEGRAM_BOT_TOKEN` o `TELEGRAM_CHAT_ID`, avisa y despliega sin las
+alertas de Grafana. Para exigirlas siempre usa `DEPLOY_REQUIRE_ALERTS=1`.
+Otras variables: `DEPLOY_SKIP_PUSH=1` (no empujar) y `DEPLOY_ALLOW_DIRTY=1`
+(permitir cambios sin commitear).
 
 La Pi necesita credenciales de git para el repositorio privado (clave SSH o
 token). No las guardes en el repositorio.
+
+### Fase 1: sondas DS18B20
+
+El driver real ya está implementado y probado; esta fase valida el cableado y
+la calibración. Con las sondas conectadas según el plano:
+
+```bash
+ls /sys/bus/w1/devices/                       # seriales 28-...
+cat /sys/bus/w1/devices/28-xxxxxxxxxxxx/w1_slave
+```
+
+Copia los dos seriales en `config/hidro.yaml` (`water_temp_1` y
+`water_temp_2`). Después verifica que el contenedor ve el bus y las sondas:
+
+```bash
+docker compose -f compose.yaml -f compose.hardware.yaml exec hidro-core ls /sys/bus/w1/devices
+docker compose -f compose.yaml -f compose.hardware.yaml exec hidro-core hidro read
+```
+
+Hasta que se conecten los sensores de las fases siguientes, sus lecturas
+aparecerán como `invalid`; es lo esperado. La prueba de aceptación es tomar una
+sonda en la mano y ver subir su temperatura en Grafana.
+
+Si una sonda marca 85 °C o CRC inválida, revisa el cableado, la resistencia de
+4,7 kΩ y que el serial del YAML coincida con el del bus.
+
 
 ## Operación
 
@@ -264,6 +321,6 @@ config/hidro.yaml         # hardware declarado, rangos y reglas
 config/grafana/           # provisioning de datasource, dashboard y alertas
 core/src/hidro/           # paquete: drivers, control, alertas, storage, CLI
 core/tests/               # pruebas sin hardware
-scripts/                  # utilidades de despliegue
+scripts/                  # render de alertas y diagnóstico de la Pi
 deploy.sh                 # PC → Pi por SSH
 ```
