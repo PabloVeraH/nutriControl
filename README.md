@@ -4,8 +4,9 @@ Sistema de control y monitoreo para un cultivo hidropónico NFT. El núcleo
 (`hidro-core`) lee sensores, publica en InfluxDB, evalúa reglas de alarma y
 dosificación, y avisa por Telegram. Grafana muestra el estado del cultivo.
 
-Estado actual: **Fase 0** (simulación completa en el PC, sin hardware). El
-detalle de lo hecho, lo verificado y los puntos de control está en
+Estado actual: **Fase 0** verificada en simulación. Las fases 1 y 2 tienen el
+software y la verificación listos, pendientes del hardware y del acceso a la Pi.
+El detalle de lo hecho, lo verificado y los puntos de control está en
 [`PROGRESS.md`](PROGRESS.md). El diseño completo está en
 [`PLAN_IMPLEMENTACION.md`](PLAN_IMPLEMENTACION.md).
 
