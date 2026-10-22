@@ -138,6 +138,19 @@ def cmd_calibrate_flow(args: argparse.Namespace) -> int:
         input(f"Vierte exactamente {args.liters:g} L y pulsa Enter al terminar... ")
         pulses_per_liter = calculate_pulses_per_liter(counter.pulses, args.liters)
         previous = store.flow()
+        reference = previous.pulses_per_liter if previous else flow.pulses_per_liter
+        if not 0.5 <= pulses_per_liter / reference <= 2.0:
+            # Ruido en la señal o un volumen mal medido dan valores absurdos que
+            # luego dispararían (o esconderían) la alarma de flujo.
+            print(
+                f"aviso: {pulses_per_liter:.0f} pulsos/L se aleja mucho de la "
+                f"referencia ({reference:.0f} pulsos/L)",
+                file=sys.stderr,
+            )
+            answer = input("¿Guardar de todos modos? [s/N] ").strip().lower()
+            if answer not in {"s", "si", "sí", "y", "yes"}:
+                print("calibración descartada")
+                return 1
         store.save_flow(pulses_per_liter=pulses_per_liter)
         print(f"calibración guardada: {pulses_per_liter:.0f} pulsos/L")
         if previous is not None:

@@ -9,7 +9,11 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+from hidro.logging_setup import get_logger
+
+logger = get_logger("calibration")
 
 PH_CALIBRATION_MAX_AGE = timedelta(days=30)
 MIN_ABS_SLOPE = 0.02
@@ -138,13 +142,19 @@ class CalibrationStore:
 
     # ------------------------------------------------------------------ lectura
 
-    def _load(self) -> _CalibrationFile:
+    def _load(self, *, strict: bool = False) -> _CalibrationFile:
+        """Con `strict` un archivo inválido es un error: guardar sobre él borraría
+        las demás calibraciones. Al leer se usan los valores por defecto."""
         if not self.path.exists():
             return _CalibrationFile()
-        raw = yaml.safe_load(self.path.read_text(encoding="utf-8")) or {}
         try:
+            raw = yaml.safe_load(self.path.read_text(encoding="utf-8")) or {}
             return _CalibrationFile.model_validate(raw)
-        except Exception:
+        except (OSError, yaml.YAMLError, ValidationError) as exc:
+            message = f"{self.path} no es válido; corrígelo o respáldalo y bórralo ({exc})"
+            if strict:
+                raise ValueError(message) from exc
+            logger.warning("%s; se ignoran las calibraciones guardadas", message)
             return _CalibrationFile()
 
     def ph(self) -> PHCalibration | None:
@@ -221,7 +231,7 @@ class CalibrationStore:
                 f"pendiente fuera de rango: {calibration.slope:.3f} V/pH "
                 f"(esperado entre {MIN_ABS_SLOPE} y {MAX_ABS_SLOPE})"
             )
-        data = self._load()
+        data = self._load(strict=True)
         data.ph = _PHEntry(
             v1=v1,
             ph1=ph1,
@@ -252,7 +262,7 @@ class CalibrationStore:
             t_c=t_c,
             calibrated_at=calibrated_at or datetime.now(UTC),
         )
-        data = self._load()
+        data = self._load(strict=True)
         data.ec = _ECEntry(
             k=entry.k,
             standard_us_cm=entry.standard_us_cm,
@@ -272,7 +282,7 @@ class CalibrationStore:
             pulses_per_liter=pulses_per_liter,
             calibrated_at=calibrated_at or datetime.now(UTC),
         )
-        data = self._load()
+        data = self._load(strict=True)
         data.flow = _FlowEntry(
             pulses_per_liter=entry.pulses_per_liter,
             calibrated_at=entry.calibrated_at,
@@ -284,7 +294,7 @@ class CalibrationStore:
         if ml_per_min <= 0:
             raise ValueError("ml/min debe ser positivo")
         entry = PumpCalibration(ml_per_min=ml_per_min, calibrated_at=datetime.now(UTC))
-        data = self._load()
+        data = self._load(strict=True)
         data.pumps[pump_id] = _PumpEntry(
             ml_per_min=entry.ml_per_min,
             calibrated_at=entry.calibrated_at,
@@ -299,7 +309,7 @@ class CalibrationStore:
             t_c=t_c,
             measured_at=datetime.now(UTC),
         )
-        data = self._load()
+        data = self._load(strict=True)
         data.ph_pending = entry
         self._save(data)
         return PHPendingPoint(
@@ -310,7 +320,7 @@ class CalibrationStore:
         )
 
     def clear_ph_pending(self) -> None:
-        data = self._load()
+        data = self._load(strict=True)
         data.ph_pending = None
         self._save(data)
 
