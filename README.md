@@ -42,7 +42,7 @@ docker compose -f compose.yaml -f compose.mock.yaml up -d --build
 ```
 
 - Grafana: <http://localhost:3300> con `GRAFANA_ADMIN_USER` y
-  `GRAFANA_ADMIN_PASSWORD`. El dashboard "hidro — sistema NFT" y el datasource
+  `GRAFANA_ADMIN_PASSWORD`. El dashboard "nutriControl — sistema NFT" y el datasource
   se aprovisionan solos.
 - Logs del núcleo: `docker compose -f compose.yaml -f compose.mock.yaml logs -f hidro-core`
 - Estado: `docker compose -f compose.yaml -f compose.mock.yaml ps`
@@ -272,7 +272,9 @@ docker compose -f compose.yaml -f compose.hardware.yaml exec hidro-core hidro re
 ```
 
 Hasta que se conecten los sensores de las fases siguientes, sus lecturas
-aparecerán como `invalid`; es lo esperado. La prueba de aceptación es tomar una
+aparecerán como `invalid`; es lo esperado. Si Telegram está activo, llegará un
+aviso único por cada sensor ausente ("sin lectura válida"); no se repite salvo
+que la condición sea crítica. La prueba de aceptación es tomar una
 sonda en la mano y ver subir su temperatura en Grafana.
 
 Si una sonda marca 85 °C o CRC inválida, revisa el cableado, la resistencia de
