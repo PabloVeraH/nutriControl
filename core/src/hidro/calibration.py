@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -18,6 +19,8 @@ logger = get_logger("calibration")
 PH_CALIBRATION_MAX_AGE = timedelta(days=30)
 MIN_ABS_SLOPE = 0.02
 MAX_ABS_SLOPE = 0.60
+MIN_EC_K = 0.1
+MAX_EC_K = 10.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +67,9 @@ class ECCalibration:
     voltage: float | None
     t_c: float | None
     calibrated_at: datetime
+
+    def k_is_reasonable(self) -> bool:
+        return math.isfinite(self.k) and MIN_EC_K <= self.k <= MAX_EC_K
 
 
 @dataclass(frozen=True, slots=True)
@@ -253,8 +259,15 @@ class CalibrationStore:
         t_c: float,
         calibrated_at: datetime | None = None,
     ) -> ECCalibration:
-        if k <= 0:
-            raise ValueError("el factor k debe ser positivo")
+        if not math.isfinite(k) or not MIN_EC_K <= k <= MAX_EC_K:
+            raise ValueError(
+                f"factor k fuera de rango: {k:.3f} "
+                f"(esperado entre {MIN_EC_K:g} y {MAX_EC_K:g})"
+            )
+        if not math.isfinite(standard_us_cm) or standard_us_cm <= 0:
+            raise ValueError("la solución patrón debe ser positiva")
+        if not math.isfinite(voltage) or not math.isfinite(t_c):
+            raise ValueError("voltaje y temperatura deben ser finitos")
         entry = ECCalibration(
             k=k,
             standard_us_cm=standard_us_cm,

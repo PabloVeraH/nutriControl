@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import Any
 
@@ -80,12 +81,19 @@ class TDSAnalogSensor:
         return float(measurement.numeric)
 
     def _sample_voltage(self) -> float:
-        if self.power_switch is None:
+        with self.powered():
             return self.adc.read_median_voltage(self.channel, self.gain_v, self.samples)
+
+    @contextmanager
+    def powered(self) -> Iterator[None]:
+        """Enciende la sonda, espera el asentamiento y la apaga siempre al salir."""
+        if self.power_switch is None:
+            yield
+            return
         self.power_switch.on()
         try:
             self._sleep(self.settle_s)
-            return self.adc.read_median_voltage(self.channel, self.gain_v, self.samples)
+            yield
         finally:
             self.power_switch.off()
 
@@ -115,6 +123,11 @@ class TDSAnalogSensor:
         if calibration is None:
             quality = "suspect"
             logger.warning("EC %s sin calibrar: se usa k=1.0", self.id)
+        elif not calibration.k_is_reasonable():
+            quality = "suspect"
+            logger.warning(
+                "factor k de EC anómalo (%.3f); recalibrar", calibration.k
+            )
         if temperature is None:
             quality = "suspect"
 
