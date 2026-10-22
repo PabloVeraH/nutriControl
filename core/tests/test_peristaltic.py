@@ -89,6 +89,16 @@ def test_stop_event_interrupts_dispense() -> None:
         sleep=sleeping,
         stop_event=stop,
     )
-    pump.dispense_ml(1.0)
+    actual = pump.dispense_ml(1.0)
     assert switch.events == ["on", "off"]
     assert clock.now < 1010.0
+    # Informa el tiempo real encendida, no los 60 s pedidos.
+    assert actual == pytest.approx(0.1)
+
+
+@pytest.mark.parametrize("ml", [float("nan"), float("inf"), 0.0, -1.0])
+def test_dispense_rejects_non_finite_or_non_positive_volume(ml: float) -> None:
+    pump, switch, _clock = make_pump()
+    with pytest.raises(ValueError):
+        pump.dispense_ml(ml)
+    assert switch.events == []

@@ -159,6 +159,15 @@ def test_duplicate_pump_roles_are_rejected() -> None:
         AppConfig.model_validate(raw)
 
 
+def test_conventional_pump_id_cannot_take_another_role() -> None:
+    raw = base_config_dict()
+    raw["outputs"][1]["id"] = "pump_ph_up"
+    raw["outputs"][1]["role"] = "ph_down"
+    raw["dosing"]["limits"]["max_ml_per_day"] = {}
+    with pytest.raises(Exception, match="cambia el id o el rol"):
+        AppConfig.model_validate(raw)
+
+
 def test_validator_rejects_invalid_low_when() -> None:
     raw = base_config_dict()
     raw["sensors"].append(

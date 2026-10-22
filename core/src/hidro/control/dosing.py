@@ -7,6 +7,7 @@ from datetime import datetime
 
 from hidro.alerts.manager import Severity
 from hidro.config import (
+    PUMP_ROLE_IDS,
     AppConfig,
     FloatSwitchConfig,
     FlowHallConfig,
@@ -21,15 +22,10 @@ from hidro.logging_setup import get_logger
 
 logger = get_logger("control.dosing")
 
-PH_DOWN = "pump_ph_down"
-PH_UP = "pump_ph_up"
-NUTRIENT_A = "pump_nutrient_a"
-NUTRIENT_B = "pump_nutrient_b"
-
-PH_DOWN_ROLE: PumpRole = "ph_down"
-PH_UP_ROLE: PumpRole = "ph_up"
-NUTRIENT_A_ROLE: PumpRole = "nutrient_a"
-NUTRIENT_B_ROLE: PumpRole = "nutrient_b"
+PH_DOWN = PUMP_ROLE_IDS["ph_down"]
+PH_UP = PUMP_ROLE_IDS["ph_up"]
+NUTRIENT_A = PUMP_ROLE_IDS["nutrient_a"]
+NUTRIENT_B = PUMP_ROLE_IDS["nutrient_b"]
 
 
 @dataclass(frozen=True)
@@ -143,51 +139,15 @@ class DosingController:
             self._finish(decision, notices)
             return decision
 
-        if flags.ph_danger or ph < self.config.ranges.ph.danger_low or ph > self.config.ranges.ph.danger_high:
-            if ph < self.config.ranges.ph.danger_low:
-                self._add_ph_action(
-                    decision,
-                    notices,
-                    self._pump_id(PH_DOWN_ROLE, PH_DOWN),
-                    self.dosing.ph_down_ml,
-                    ph,
-                    now,
-                    "pH bajo",
-                )
-            else:
-                self._add_ph_action(
-                    decision,
-                    notices,
-                    self._pump_id(PH_UP_ROLE, PH_UP),
-                    self.dosing.ph_up_ml,
-                    ph,
-                    now,
-                    "pH alto",
-                )
+        ph_range = self.config.ranges.ph
+        if flags.ph_danger or ph < ph_range.danger_low or ph > ph_range.danger_high:
+            self._add_ph_action(decision, notices, ph, now)
         elif ec < self.config.ranges.ec.low:
             self._add_nutrient_actions(decision, notices, ec, now)
         elif ec > self.config.ranges.ec.high:
             decision.blocked.append("EC sobre el máximo: diluir con agua")
-        elif ph < self.config.ranges.ph.low:
-            self._add_ph_action(
-                decision,
-                notices,
-                self._pump_id(PH_DOWN_ROLE, PH_DOWN),
-                self.dosing.ph_down_ml,
-                ph,
-                now,
-                "pH bajo",
-            )
-        elif ph > self.config.ranges.ph.high:
-            self._add_ph_action(
-                decision,
-                notices,
-                self._pump_id(PH_UP_ROLE, PH_UP),
-                self.dosing.ph_up_ml,
-                ph,
-                now,
-                "pH alto",
-            )
+        elif ph < ph_range.low or ph > ph_range.high:
+            self._add_ph_action(decision, notices, ph, now)
 
         self._finish(decision, notices)
         return decision
@@ -198,12 +158,18 @@ class DosingController:
         self,
         decision: DosingDecision,
         notices: dict[str, DosingNotice],
-        pump_id: str,
-        ml: float,
         ph: float,
         now: datetime,
-        reason: str,
     ) -> None:
+        # pH bajo (ácido) se corrige con base (ph_up); pH alto, con ácido (ph_down).
+        if ph < self.config.ranges.ph.low:
+            pump_id = self._pump_id("ph_up")
+            ml, reason = self.dosing.ph_up_ml, "pH bajo"
+        elif ph > self.config.ranges.ph.high:
+            pump_id = self._pump_id("ph_down")
+            ml, reason = self.dosing.ph_down_ml, "pH alto"
+        else:
+            return
         detail = f"pH {ph:.2f}: {reason}"
         self._schedule(decision, notices, pump_id, ml, detail, now, Severity.HIGH, f"pH {ph:.2f}")
 
@@ -214,10 +180,7 @@ class DosingController:
         ec: float,
         now: datetime,
     ) -> None:
-        pumps = [
-            self._pump_id(NUTRIENT_A_ROLE, NUTRIENT_A),
-            self._pump_id(NUTRIENT_B_ROLE, NUTRIENT_B),
-        ]
+        pumps = [self._pump_id("nutrient_a"), self._pump_id("nutrient_b")]
         available = [pump_id for pump_id in pumps if pump_id in self.outputs]
         if len(available) < 2:
             notices["dosing-nutrients"] = DosingNotice(
@@ -229,6 +192,7 @@ class DosingController:
             )
             return
         detail = f"EC {ec:.0f} µS/cm bajo el mínimo"
+        planned = len(decision.actions)
         for pump_id in available:
             self._schedule(
                 decision,
@@ -240,6 +204,9 @@ class DosingController:
                 Severity.MEDIUM,
                 detail,
             )
+        # A y B van siempre juntos: si una no puede dosificar, tampoco la otra.
+        if len(decision.actions) - planned < len(available):
+            del decision.actions[planned:]
 
     def _schedule(
         self,
@@ -287,12 +254,26 @@ class DosingController:
             )
             return
 
-        safety_reason = self.safety.block_reason(pump_id, ml, now)
+        key = f"safety-{pump_id}"
+        already_blocked = self.safety.is_blocked(pump_id)
+        safety_reason = self.safety.block_reason(
+            pump_id, ml, now, dry_run=self.dosing.dry_run
+        )
+        if safety_reason is not None and self.dosing.dry_run and not already_blocked:
+            # En simulación el pH no cambia y la misma regla se repite: avisar
+            # sin dejar un bloqueo real que sobreviva al paso a dry_run: false.
+            notices[key] = DosingNotice(
+                key,
+                True,
+                Severity.MEDIUM,
+                f"🧪 SIMULACIÓN: la bomba '{pump_id}' se bloquearía por seguridad: "
+                f"{safety_reason}.",
+            )
+            return
         if safety_reason is not None:
             # Un límite alcanzado deja la bomba bloqueada hasta que una persona
             # revise el cultivo y ejecute `hidro safety reset`.
             self.safety.block(pump_id, safety_reason)
-            key = f"safety-{pump_id}"
             notices[key] = DosingNotice(
                 key,
                 True,
@@ -308,9 +289,9 @@ class DosingController:
 
     # ------------------------------------------------------------------ utilidades
 
-    def _pump_id(self, role: PumpRole, fallback: str) -> str:
+    def _pump_id(self, role: PumpRole) -> str:
         """Id configurado para un rol; los ids convencionales siguen sirviendo."""
-        return self._pumps_by_role.get(role, fallback)
+        return self._pumps_by_role.get(role, PUMP_ROLE_IDS[role])
 
     def _fresh_value(
         self, name: str | None, now: datetime, max_age_s: float

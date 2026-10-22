@@ -107,7 +107,7 @@ def test_dose_executes_dry_run_and_remembers_time(tmp_path: Path) -> None:
     app = build_app(settings_for(tmp_path), config)
     app.latest.update(
         [
-            Measurement("ph", 4.8, "pH", NOW, "ok", "ph"),
+            Measurement("ph", 7.2, "pH", NOW, "ok", "ph"),
             Measurement("ec", 1150.0, "µS/cm", NOW, "ok", "ec"),
             Measurement("flow", 1.4, "L/min", NOW, "ok", "flow"),
         ]
@@ -137,7 +137,7 @@ def test_dose_reports_pump_errors(tmp_path: Path) -> None:
     app = build_app(settings_for(tmp_path), config)
     app.latest.update(
         [
-            Measurement("ph", 4.8, "pH", NOW, "ok", "ph"),
+            Measurement("ph", 7.2, "pH", NOW, "ok", "ph"),
             Measurement("ec", 1150.0, "µS/cm", NOW, "ok", "ec"),
             Measurement("flow", 1.4, "L/min", NOW, "ok", "flow"),
         ]

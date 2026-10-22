@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 from collections.abc import Callable
@@ -34,8 +35,9 @@ class PeristalticPump:
         self._time_scale = time_scale
 
     def dispense_ml(self, ml: float) -> float:
-        if ml <= 0:
-            raise ValueError("el volumen debe ser positivo")
+        # NaN pasaría `ml <= 0` y dejaría la bomba encendida sin fin.
+        if not math.isfinite(ml) or ml <= 0:
+            raise ValueError("el volumen debe ser finito y positivo")
         if self.ml_per_min is None or self.ml_per_min <= 0:
             raise PumpNotCalibrated(f"la bomba {self.id} no está calibrada")
         seconds = ml / self.ml_per_min * 60.0
@@ -58,7 +60,11 @@ class PeristalticPump:
                 self._sleep(min(0.1, remaining))
         finally:
             self._switch.off()
+        elapsed = self._clock() - started
 
+        # Una parada a mitad de dosis devuelve el tiempo realmente encendida.
+        if self._time_scale > 0:
+            return min(seconds, elapsed / self._time_scale)
         return seconds
 
     # Interfaz Switch: solo se usa para apagado de emergencia, nunca para

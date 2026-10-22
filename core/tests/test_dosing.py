@@ -162,28 +162,54 @@ def test_mix_wait_blocks_next_dose(tmp_path: Path) -> None:
 
 
 def test_ph_danger_schedules_correction(tmp_path: Path) -> None:
-    low_outputs = {PH_DOWN: FakePump(PH_DOWN), PH_UP: FakePump(PH_UP)}
-    controller, _ = build(tmp_path, outputs=low_outputs, latest=populated(ph=4.8))
+    outputs = {PH_DOWN: FakePump(PH_DOWN), PH_UP: FakePump(PH_UP)}
+    controller, _ = build(tmp_path, outputs=outputs, latest=populated(ph=4.8))
     decision = controller.plan(NOW, DosingFlags())
-    assert [action.pump_id for action in decision.actions] == [PH_DOWN]
+    # pH muy ácido: se sube con base, nunca con más ácido.
+    assert [action.pump_id for action in decision.actions] == [PH_UP]
     assert decision.actions[0].seconds == pytest.approx(6.0)
-    assert "pH 4.80" in decision.actions[0].reason
+    assert "pH 4.80: pH bajo" in decision.actions[0].reason
 
     controller.latest = populated(ph=7.2)
     decision = controller.plan(NOW, DosingFlags())
-    assert [action.pump_id for action in decision.actions] == [PH_UP]
+    assert [action.pump_id for action in decision.actions] == [PH_DOWN]
+    assert "pH alto" in decision.actions[0].reason
 
 
 def test_ph_outside_range_schedules_correction(tmp_path: Path) -> None:
     outputs = {PH_DOWN: FakePump(PH_DOWN), PH_UP: FakePump(PH_UP)}
     controller, _ = build(tmp_path, outputs=outputs, latest=populated(ph=5.4))
-    assert [a.pump_id for a in controller.plan(NOW, DosingFlags()).actions] == [PH_DOWN]
+    assert [a.pump_id for a in controller.plan(NOW, DosingFlags()).actions] == [PH_UP]
 
     controller.latest = populated(ph=6.3)
-    assert [a.pump_id for a in controller.plan(NOW, DosingFlags()).actions] == [PH_UP]
+    assert [a.pump_id for a in controller.plan(NOW, DosingFlags()).actions] == [PH_DOWN]
 
     controller.latest = populated(ph=6.1)
     assert controller.plan(NOW, DosingFlags()).actions == []
+
+
+def test_ph_doses_use_their_own_volume(tmp_path: Path) -> None:
+    outputs = {PH_DOWN: FakePump(PH_DOWN), PH_UP: FakePump(PH_UP)}
+    controller, _ = build(
+        tmp_path, outputs=outputs, latest=populated(ph=5.4), ph_up_ml=2.0, ph_down_ml=0.5
+    )
+    assert [a.ml for a in controller.plan(NOW, DosingFlags()).actions] == [2.0]
+    controller.latest = populated(ph=6.5)
+    assert [a.ml for a in controller.plan(NOW, DosingFlags()).actions] == [0.5]
+
+
+def test_single_ph_down_pump_never_acidifies_low_ph(tmp_path: Path) -> None:
+    # Configuración inicial del plan: solo pH down. Con pH bajo se avisa.
+    controller, _ = build(tmp_path, latest=populated(ph=5.4))
+    decision = controller.plan(NOW, DosingFlags())
+    assert decision.actions == []
+    assert [notice.key for notice in decision.notices] == ["dosing-missing-pump_ph_up"]
+
+
+def test_danger_flag_without_out_of_range_reading_does_nothing(tmp_path: Path) -> None:
+    outputs = {PH_DOWN: FakePump(PH_DOWN), PH_UP: FakePump(PH_UP)}
+    controller, _ = build(tmp_path, outputs=outputs)
+    assert controller.plan(NOW, DosingFlags(ph_danger=True)).actions == []
 
 
 def test_ec_danger_schedules_both_nutrients(tmp_path: Path) -> None:
@@ -217,7 +243,7 @@ def test_ec_too_high_requires_dilution(tmp_path: Path) -> None:
 
 
 def test_missing_pump_is_reported_then_cleared(tmp_path: Path) -> None:
-    controller, _ = build(tmp_path, outputs={}, latest=populated(ph=5.4))
+    controller, _ = build(tmp_path, outputs={}, latest=populated(ph=6.5))
     decision = controller.plan(NOW, DosingFlags())
     assert decision.actions == []
     assert [notice.key for notice in decision.notices] == ["dosing-missing-pump_ph_down"]
@@ -233,7 +259,7 @@ def test_uncalibrated_pump_is_reported(tmp_path: Path) -> None:
     controller, _ = build(
         tmp_path,
         outputs={PH_DOWN: FakePump(PH_DOWN, ml_per_min=None)},
-        latest=populated(ph=5.4),
+        latest=populated(ph=6.5),
     )
     decision = controller.plan(NOW, DosingFlags())
     assert decision.actions == []
@@ -244,7 +270,7 @@ def test_too_long_dose_is_reported(tmp_path: Path) -> None:
     controller, _ = build(
         tmp_path,
         outputs={PH_DOWN: FakePump(PH_DOWN, ml_per_min=0.1, max_on_s=30)},
-        latest=populated(ph=5.4),
+        latest=populated(ph=6.5),
     )
     decision = controller.plan(NOW, DosingFlags())
     assert decision.actions == []
@@ -252,7 +278,7 @@ def test_too_long_dose_is_reported(tmp_path: Path) -> None:
 
 
 def test_safety_block_is_reported(tmp_path: Path) -> None:
-    controller, safety = build(tmp_path, latest=populated(ph=5.4))
+    controller, safety = build(tmp_path, latest=populated(ph=6.5))
     safety.block(PH_DOWN, "falla previa")
     decision = controller.plan(NOW, DosingFlags())
     assert decision.actions == []
@@ -273,7 +299,7 @@ def test_custom_sensor_ids_and_pump_roles(tmp_path: Path) -> None:
     latest = LatestReadings()
     latest.update(
         [
-            measurement("ph_probe", 5.4, "pH"),
+            measurement("ph_probe", 6.5, "pH"),
             measurement("ec_probe", 1150.0, "µS/cm"),
             measurement("flow", 1.4, "L/min"),
         ]
@@ -291,7 +317,8 @@ def test_custom_sensor_ids_and_pump_roles(tmp_path: Path) -> None:
 def test_hourly_limit_blocks_dose_until_manual_reset(tmp_path: Path) -> None:
     controller, safety = build(
         tmp_path,
-        latest=populated(ph=5.4),
+        dry_run=False,
+        latest=populated(ph=6.5),
         limits={"max_doses_per_hour": 1},
     )
     safety.record(PH_DOWN, 1.0, NOW - timedelta(minutes=5))
@@ -305,7 +332,8 @@ def test_hourly_limit_blocks_dose_until_manual_reset(tmp_path: Path) -> None:
 def test_daily_limit_blocks_dose_until_manual_reset(tmp_path: Path) -> None:
     controller, safety = build(
         tmp_path,
-        latest=populated(ph=5.4),
+        dry_run=False,
+        latest=populated(ph=6.5),
         limits={"max_doses_per_hour": 3, "max_ml_per_day": {PH_DOWN: 1.5}},
     )
     safety.record(PH_DOWN, 1.0, NOW - timedelta(hours=2))
@@ -313,6 +341,47 @@ def test_daily_limit_blocks_dose_until_manual_reset(tmp_path: Path) -> None:
     assert decision.actions == []
     assert "límite diario" in decision.notices[0].message
     assert safety.is_blocked(PH_DOWN)
+
+
+def test_dry_run_limit_is_simulated_without_real_block(tmp_path: Path) -> None:
+    controller, safety = build(
+        tmp_path, latest=populated(ph=6.5), limits={"max_doses_per_hour": 1}
+    )
+    safety.record(PH_DOWN, 1.0, NOW - timedelta(minutes=5), dry_run=True)
+    decision = controller.plan(NOW, DosingFlags())
+    assert decision.actions == []
+    assert "SIMULACIÓN" in decision.notices[0].message
+    assert "se bloquearía" in decision.notices[0].message
+    assert not safety.is_blocked(PH_DOWN)
+
+
+def test_dry_run_doses_do_not_count_for_real_limits(tmp_path: Path) -> None:
+    controller, safety = build(
+        tmp_path,
+        dry_run=False,
+        latest=populated(ph=6.5),
+        limits={"max_doses_per_hour": 1},
+    )
+    safety.record(PH_DOWN, 1.0, NOW - timedelta(minutes=5), dry_run=True)
+    assert [a.pump_id for a in controller.plan(NOW, DosingFlags()).actions] == [PH_DOWN]
+
+
+def test_real_block_is_reported_in_dry_run(tmp_path: Path) -> None:
+    controller, safety = build(tmp_path, latest=populated(ph=6.5))
+    safety.block(PH_DOWN, "fallo al dosificar")
+    message = controller.plan(NOW, DosingFlags()).notices[0].message
+    assert "bloqueada por seguridad" in message
+    assert "SIMULACIÓN" not in message
+
+
+def test_nutrients_are_skipped_together_when_one_is_blocked(tmp_path: Path) -> None:
+    outputs = {NUTRIENT_A: FakePump(NUTRIENT_A), NUTRIENT_B: FakePump(NUTRIENT_B)}
+    controller, safety = build(tmp_path, outputs=outputs, latest=populated(ec=800))
+    safety.block(NUTRIENT_B, "falla previa")
+    decision = controller.plan(NOW, DosingFlags())
+    # Solo A desequilibraría la solución: no se dosifica ninguna.
+    assert decision.actions == []
+    assert [notice.key for notice in decision.notices] == [f"safety-{NUTRIENT_B}"]
 
 
 class ExplodingPump(FakePump):

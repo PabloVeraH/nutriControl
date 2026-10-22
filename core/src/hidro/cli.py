@@ -380,11 +380,17 @@ def cmd_calibrate_pump(args: argparse.Namespace) -> int:
             relay.off()
         print(f"{pump.id}: apagada")
 
-        if measured_ml is None:
+        # La bomba ya giró: un error de tipeo no debe obligar a repetir la medición.
+        while measured_ml is None:
             raw = input("Volumen medido en el recipiente (ml): ").strip().replace(",", ".")
-            measured_ml = float(raw)
-        if not math.isfinite(measured_ml) or measured_ml <= 0:
-            raise ValueError("el volumen medido debe ser finito y positivo")
+            try:
+                value = float(raw)
+            except ValueError:
+                value = math.nan
+            if math.isfinite(value) and value > 0:
+                measured_ml = value
+            else:
+                print("escribe un volumen positivo en ml, por ejemplo 12,5", file=sys.stderr)
 
         ml_per_min = measured_ml / seconds * 60.0
         if not math.isfinite(ml_per_min) or ml_per_min <= 0:

@@ -167,6 +167,14 @@ class RelayConfig(OutputBase):
 
 PumpRole = Literal["ph_down", "ph_up", "nutrient_a", "nutrient_b"]
 
+# Id convencional de cada rol: las reglas lo usan si ninguna bomba declara el rol.
+PUMP_ROLE_IDS: dict[PumpRole, str] = {
+    "ph_down": "pump_ph_down",
+    "ph_up": "pump_ph_up",
+    "nutrient_a": "pump_nutrient_a",
+    "nutrient_b": "pump_nutrient_b",
+}
+
 
 class PeristalticConfig(OutputBase):
     type: Literal["peristaltic"]
@@ -323,6 +331,16 @@ class AppConfig(StrictModel):
         duplicate_roles = {role for role in roles if roles.count(role) > 1}
         if duplicate_roles:
             raise ValueError(f"roles de bomba duplicados: {sorted(duplicate_roles)}")
+        # pump_ph_up con role: ph_down haría que la regla de "subir pH" use el ácido.
+        for pump in self.outputs:
+            if not isinstance(pump, PeristalticConfig) or pump.role is None:
+                continue
+            for role, conventional_id in PUMP_ROLE_IDS.items():
+                if pump.id == conventional_id and pump.role != role:
+                    raise ValueError(
+                        f"{pump.id}: su id es el convencional de '{role}' pero declara "
+                        f"role: {pump.role}; cambia el id o el rol"
+                    )
 
         for pump_id, limit in self.dosing.limits.max_ml_per_day.items():
             output = self.output(pump_id)

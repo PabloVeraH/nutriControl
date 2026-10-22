@@ -421,6 +421,26 @@ def test_calibrate_pump_saves_ml_per_min(
     assert "calibración guardada" in capsys.readouterr().out
 
 
+def test_calibrate_pump_asks_again_after_a_typo(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runtime = FakeCalibrationRuntime()
+    install_pump_calibration(
+        monkeypatch, tmp_path, config=make_config(mode="hardware"), runtime=runtime
+    )
+    monkeypatch.setattr(cli.time, "sleep", lambda _seconds: None)
+    answers = iter(["s", "doce", "nan", "0", "12,5", "s"])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
+
+    assert cli.cmd_calibrate_pump(Namespace(id=None, seconds=60.0, ml=None, yes=False)) == 0
+
+    # La bomba giró una sola vez: los errores de tipeo no repiten la medición.
+    assert runtime.device.events == ["on", "off"]
+    assert capsys.readouterr().err.count("escribe un volumen positivo") == 3
+    store = CalibrationStore(tmp_path / "calibration.yaml")
+    assert store.pump_ml_per_min("pump_ph_down") == pytest.approx(12.5)
+
+
 def test_calibrate_pump_accepts_measured_volume(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
