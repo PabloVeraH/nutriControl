@@ -48,6 +48,7 @@ class Monitor:
     def evaluate(self, now: datetime) -> MonitorResult:
         signals: list[MonitorSignal] = []
         signals.extend(self._sensor_signals(now))
+        signals.extend(self._quality_signals(now))
         signals.extend(self._water_signals(now))
         signals.extend(self._air_signals(now))
 
@@ -88,6 +89,31 @@ class Monitor:
                         f"{self.config.monitoring.stale_after_s / 60:.0f} min."
                     ),
                     resolved_message=f"Lectura de '{sensor.id}' normalizada.",
+                )
+            )
+        return signals
+
+    def _quality_signals(self, now: datetime) -> list[MonitorSignal]:
+        """Plan 6.4: avisar si pH o EC no son confiables (calibración vencida,
+        anómala, sin calibrar o sin temperatura). Sin esto solo queda en el log,
+        y la dosificación se bloquea sin que nadie sepa por qué."""
+        signals = []
+        for sensor in self.config.sensors:
+            if not isinstance(sensor, (PHAnalogConfig, TDSAnalogConfig)):
+                continue
+            measurement = self._fresh(sensor.id, now, self.config.monitoring.stale_after_s)
+            signals.append(
+                MonitorSignal(
+                    key=f"quality-{sensor.id}",
+                    active=measurement is not None and measurement.quality == "suspect",
+                    severity=Severity.MEDIUM,
+                    message=(
+                        f"La lectura de '{sensor.id}' no es confiable: calibración vencida "
+                        "(más de 30 días), anómala o ausente, o falta la temperatura del "
+                        "agua. La dosificación queda bloqueada; recalibra o revisa el "
+                        "DS18B20."
+                    ),
+                    resolved_message=f"La lectura de '{sensor.id}' vuelve a ser confiable.",
                 )
             )
         return signals

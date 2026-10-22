@@ -12,7 +12,7 @@ siguiente fase sin cerrar el punto de control humano correspondiente.
 | 2 — Flotador y relés | En curso; drivers, CLI y verificación listos, validación física pendiente | `fase-2` |
 | 3 — Flujómetro | En curso; driver y calibración listos, validación física pendiente | `fase-3` |
 | 4 — Aire (HTU21D) | En curso; driver, cálculos y verificación listos, validación física pendiente | `fase-4` |
-| 5 — pH y TDS (ADS1115) | Pendiente | — |
+| 5 — pH y TDS (ADS1115) | En curso; drivers, CLI y verificación listos, validación física pendiente | `fase-5` |
 | 6 — Bomba y dosificación | Pendiente | — |
 | 7 — Operación | Pendiente | — |
 
@@ -401,7 +401,108 @@ que falla con el código anterior.
 
 ## Fase 5 — pH y TDS (ADS1115)
 
-Pendiente de hardware y soluciones de calibración.
+**Estado:** en curso. Drivers, CLI, pruebas y documentación listos; faltan el
+hardware y las soluciones de calibración.
+**Rama:** `fase-5` (desde `main`) · **Fecha:** 2026-10-22
+
+### Hecho
+
+- Drivers `ads1115`, `ph_analog` y `tds_analog` con lecturas single-shot,
+  media recortada, compensación de temperatura y secuencia de energizado del
+  TDS. El pH se declara antes que el EC en la configuración para medirlo con el
+  TDS apagado.
+- `CalibrationStore` persiste pH en dos puntos (`V1, pH1, V2, pH2, T_cal`) y el
+  factor `k` del EC con patrón, voltaje y temperatura. El punto de pH pendiente
+  permite completar la calibración en dos ejecuciones.
+- CLI `hidro calibrate ph --point 6.86|4.00`: guía el enjuague, pide la
+  temperatura (o acepta `--temperature`), espera que tres lecturas consecutivas
+  queden dentro de 10 mV (máximo 30 s), pide confirmación y valida la pendiente
+  entre `0,02` y `0,60 V/pH`. Si la pendiente es anómala, conserva el punto
+  pendiente y no guarda.
+- CLI `hidro calibrate ec --standard 1413`: reutiliza el relé `tds_power`, espera
+  `settle_s`, estabiliza la lectura y apaga el relé en un `finally`; valida
+  `k` entre `0,1` y `10` y pide confirmación antes de guardar.
+- `TDSAnalogSensor.powered()` concentra el encendido, asentamiento y apagado;
+  un `k` anómalo en el archivo de calibración marca el EC como `suspect`.
+- Ambas calibraciones exigen modo hardware, avisan que hay que detener
+  `hidro-core` y prohíben guardar sobre un `calibration.yaml` inválido.
+- Pruebas nuevas de estabilidad del ADC, parámetros inválidos, contexto
+  `powered`, límites de `k` y flujos CLI de pH/EC, incluido el apagado del relé
+  ante errores. `pytest`: 273 pruebas, cobertura 90,57 %; `ruff` y `mypy` sin
+  hallazgos.
+- README con el cableado, el divisor del pH, `i2cdetect`, la calibración guiada
+  y la prueba de interferencia pH/TDS.
+
+### Bloqueos
+
+- Persisten el acceso SSH sin clave y la falta de hardware de las fases 1 a 4.
+- No hay ADS1115, sondas de pH/TDS, resistencias de 10 kΩ/20 kΩ, soluciones de
+  calibración ni agua destilada conectadas.
+- Telegram sigue sin configurar; no se pueden validar las alertas reales.
+- Sin acceso a la Pi no se puede ejecutar `i2cdetect` ni la calibración física.
+
+### Tareas
+
+- [x] Drivers y pruebas de ADC, pH y TDS.
+- [x] Persistencia y validación de calibraciones.
+- [x] CLI de calibración de pH y EC.
+- [x] Secuencia de energizado del TDS y apagado seguro.
+- [x] Documentación y verificación local.
+- [ ] Cablear el ADS1115, los divisores y las sondas.
+- [ ] Confirmar `40` y `48` en `i2cdetect -y 1`.
+- [ ] Calibrar pH 6,86 y 4,00 y registrar la pendiente y `V7`.
+- [ ] Calibrar EC con 1413 µS/cm y registrar `k`.
+- [ ] Verificar con una tercera solución o un medidor de lápiz.
+- [ ] Probar la interferencia pH/TDS y registrar el resultado.
+- [ ] Reiniciar el núcleo y confirmar pH/EC con `quality=ok`.
+
+### Punto de control humano
+
+1. `i2cdetect -y 1` muestra `40` (HTU21D) y `48` (ADS1115).
+2. La calibración de pH guarda una pendiente y `V7` coherentes; una pendiente
+   fuera de rango es rechazada.
+3. La calibración de EC guarda un `k` coherente y el relé `tds_power` queda
+   apagado al terminar.
+4. La verificación en una tercera solución o con un medidor de lápiz es
+   razonable.
+5. La prueba de interferencia pH/TDS no muestra una variación apreciable; si la
+   muestra, se mantiene la secuencia por defecto y se documenta.
+6. `hidro read` muestra pH y EC con `quality=ok` y valores coherentes.
+
+Los comandos concretos están en el README, sección "Fase 5: pH y TDS
+(ADS1115)".
+
+### Publicación
+
+- Rama `fase-5`, commits `30e9d85`, `4de997c` y `0feac8e`, publicada en
+  `origin/fase-5`. La calibración física y el punto de control siguen
+  pendientes de hardware y soluciones.
+
+### Revisión
+
+**Rama:** `revision-fase-5` (desde `fase-5`). Cada corrección tiene una prueba
+que falla con el código anterior.
+
+| Hallazgo | Gravedad | Corrección |
+| --- | --- | --- |
+| Con el núcleo detenido el GPIO de `tds_power` queda flotando: el TDS podía quedar energizado durante la calibración de pH y alterarla | Alta | `calibrate ph` toma `tds_power` y lo mantiene apagado |
+| Nada impedía calibrar con el núcleo corriendo (comparte el ADS1115 y conmuta el relé cada ciclo) | Alta | Al tomar `tds_power`, el GPIO ocupado aborta con un mensaje claro |
+| La estabilidad (3 muestras en 1,5 s, 10 mV ≈ 0,08 pH, máximo 30 s) aceptaba una sonda todavía en deriva | Alta | 2 mV durante 10 s (pH, máximo 3 min) y 5 mV (EC, máximo 1 min); ajustable con `--tolerance-mv` |
+| No existía forma de hacer la prueba de interferencia pH/TDS del plan: el núcleo y `hidro read` siempre leen el pH con el TDS apagado | Media | Nuevo `hidro interference` |
+| Una pendiente positiva (soluciones o `--point` intercambiados) se aceptaba | Media | Pide confirmación |
+| Un punto pendiente de días atrás se combinaba con el nuevo | Media | Con más de 1 h ofrece usar la nueva medición como primer punto |
+| La temperatura de calibración se pedía a mano, aunque el plan la toma del DS18B20 | Baja | Se propone la lectura de `temperature_from` |
+| Una lectura `suspect` (calibración vencida o anómala, EC sin calibrar, sin temperatura) solo quedaba en el log; la dosificación se bloqueaba sin aviso | Media | Aviso por Telegram (`quality-<id>`) |
+| El CLI pedía reiniciar el núcleo tras calibrar pH/EC, pero el driver lee la calibración en cada ciclo | Baja | Mensaje corregido |
+| README de las fases 1 y 5: `exec hidro-core hidro read` falla en la Pi porque el núcleo tiene los GPIO | Media | Se detiene el núcleo y se usa `run --rm` |
+| `ph_analog` duplicaba la matemática de `PHCalibration` (`calibrate_two_points` y otras) y tenía código muerto | Baja | Eliminado; el CLI usa `PHCalibration` |
+
+Sin cambios:
+
+- Los valores nominales de los buffers varían con la temperatura (6,86 es 6,90
+  a 15 °C). El error es de unas 0,04 pH, menor que la precisión del PH-4502C.
+- Las tolerancias de estabilidad son estimaciones sin hardware; se ajustan en
+  la primera calibración real con `--tolerance-mv`.
 
 ## Fase 6 — Bomba y dosificación
 

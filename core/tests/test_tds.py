@@ -171,3 +171,39 @@ def test_tds_closes_power_switch(tmp_path: Path) -> None:
     )
     sensor.close()
     assert switch.events[-1] == "off"
+
+
+def test_tds_powered_context_turns_off_after_error(tmp_path: Path) -> None:
+    switch = FakeSwitch()
+    slept: list[float] = []
+    sensor = TDSAnalogSensor(
+        "ec",
+        FakeADC(1.0),
+        _store(tmp_path),
+        _latest(),
+        power_switch=switch,
+        settle_s=1.5,
+        sleep=slept.append,
+    )
+
+    with pytest.raises(RuntimeError, match="falló la lectura"), sensor.powered():
+        assert switch.is_on
+        raise RuntimeError("falló la lectura")
+
+    assert switch.events == ["on", "off"]
+    assert slept == [1.5]
+
+
+def test_tds_unreasonable_k_is_suspect(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    store.path.write_text(
+        "ec:\n"
+        "  k: 20.0\n"
+        "  standard_us_cm: 1413\n"
+        "  voltage: 1.0\n"
+        "  t_c: 25.0\n"
+        "  calibrated_at: 2026-01-01T00:00:00Z\n",
+        encoding="utf-8",
+    )
+    sensor = TDSAnalogSensor("ec", FakeADC(1.0), store, _latest(25.0))
+    assert sensor.read()[0].quality == "suspect"

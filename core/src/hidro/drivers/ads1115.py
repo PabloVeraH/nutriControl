@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 from collections.abc import Callable
 from typing import Any
@@ -86,3 +87,51 @@ class ADS1115:
 
     def close(self) -> None:
         return None
+
+
+def read_stable_voltage(
+    reader: Callable[[], float],
+    *,
+    tolerance_v: float = 0.01,
+    window: int = 3,
+    timeout_s: float = 30.0,
+    interval_s: float = 0.5,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+    on_sample: Callable[[float], None] | None = None,
+) -> float:
+    """Lee hasta que las últimas `window` muestras queden dentro de la tolerancia.
+
+    Devuelve el promedio de la ventana estable. Si no se estabiliza antes de
+    `timeout_s`, lanza `DriverError` para no guardar una calibración con ruido.
+    """
+    if window < 1:
+        raise ValueError("window debe ser al menos 1")
+    if tolerance_v < 0:
+        raise ValueError("tolerance_v no puede ser negativo")
+    if timeout_s <= 0:
+        raise ValueError("timeout_s debe ser positivo")
+    if interval_s < 0:
+        raise ValueError("interval_s no puede ser negativo")
+
+    readings: list[float] = []
+    started = clock()
+    while True:
+        value = reader()
+        if not math.isfinite(value):
+            raise DriverError("el ADS1115 devolvió un voltaje no finito")
+        readings.append(value)
+        if on_sample is not None:
+            on_sample(value)
+
+        recent = readings[-window:]
+        if len(recent) == window and max(recent) - min(recent) <= tolerance_v:
+            return sum(recent) / len(recent)
+
+        if clock() - started >= timeout_s:
+            spread = max(recent) - min(recent)
+            raise DriverError(
+                f"el voltaje no se estabilizó en {timeout_s:g} s "
+                f"(último {value:.4f} V, variación {spread:.4f} V)"
+            )
+        sleep(interval_s)

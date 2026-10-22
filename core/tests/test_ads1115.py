@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from hidro.drivers.ads1115 import ADS1115
+from hidro.drivers.ads1115 import ADS1115, read_stable_voltage
 from hidro.drivers.base import DriverError
 
 
@@ -77,3 +77,63 @@ def test_incomplete_read_raises() -> None:
     adc = ADS1115(ShortBus(0), sleep=lambda _s: None)
     with pytest.raises(DriverError):
         adc.read_raw(0)
+
+
+def test_read_stable_voltage_uses_stable_window() -> None:
+    values = iter([2.000, 2.020, 2.005, 2.004, 2.006])
+    seen: list[float] = []
+    slept: list[float] = []
+
+    voltage = read_stable_voltage(
+        lambda: next(values),
+        window=3,
+        tolerance_v=0.01,
+        timeout_s=10.0,
+        interval_s=0.5,
+        sleep=slept.append,
+        clock=lambda: 0.0,
+        on_sample=seen.append,
+    )
+
+    assert voltage == pytest.approx((2.005 + 2.004 + 2.006) / 3)
+    assert seen == [2.000, 2.020, 2.005, 2.004, 2.006]
+    assert slept == [0.5, 0.5, 0.5, 0.5]
+
+
+def test_read_stable_voltage_times_out() -> None:
+    now = [0.0]
+    values = iter([2.0, 2.05, 2.0, 2.05, 2.0])
+
+    def sleep(seconds: float) -> None:
+        now[0] += seconds
+
+    with pytest.raises(DriverError, match="no se estabilizó"):
+        read_stable_voltage(
+            lambda: next(values),
+            tolerance_v=0.001,
+            timeout_s=1.0,
+            interval_s=0.6,
+            sleep=sleep,
+            clock=lambda: now[0],
+        )
+
+
+def test_read_stable_voltage_rejects_non_finite() -> None:
+    with pytest.raises(DriverError, match="no finito"):
+        read_stable_voltage(lambda: float("nan"), sleep=lambda _s: None)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"window": 0}, "window"),
+        ({"tolerance_v": -0.01}, "tolerance_v"),
+        ({"timeout_s": 0.0}, "timeout_s"),
+        ({"interval_s": -0.1}, "interval_s"),
+    ],
+)
+def test_read_stable_voltage_rejects_bad_parameters(
+    kwargs: dict[str, float], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        read_stable_voltage(lambda: 1.0, **kwargs)

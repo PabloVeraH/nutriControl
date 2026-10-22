@@ -56,7 +56,7 @@ def test_normal_state_has_no_alert() -> None:
     assert result.conditions.tank_low is False
     assert result.conditions.ph_danger is False
     assert [signal.key for signal in result.signals if signal.active] == []
-    assert len(result.signals) == 14
+    assert len(result.signals) == 16
 
 
 def test_missing_readings_mark_every_sensor_stale() -> None:
@@ -173,3 +173,16 @@ def test_stale_sensor_flag_clears_when_reading_arrives() -> None:
     monitor.latest = populated()
     fresh = by_key(monitor.evaluate(NOW))["sensor-ph"]
     assert fresh.active is False
+
+
+def test_suspect_ph_or_ec_is_reported_and_recovers() -> None:
+    latest = populated()
+    latest.update([measurement("ph", 5.9, "pH", quality="suspect")])
+    monitor = Monitor(full_config(), latest)
+
+    signals = by_key(monitor.evaluate(NOW))
+    assert signals["quality-ph"].active is True
+    assert signals["quality-ec"].active is False
+
+    latest.update([measurement("ph", 5.9, "pH")])
+    assert by_key(monitor.evaluate(NOW))["quality-ph"].active is False

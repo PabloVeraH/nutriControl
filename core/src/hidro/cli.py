@@ -4,16 +4,43 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import signal
 import sys
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from hidro import __version__
-from hidro.calibration import CalibrationStore
-from hidro.config import ConfigError, FlowHallConfig, load_config
+from hidro.calibration import (
+    MAX_ABS_SLOPE,
+    MAX_EC_K,
+    MIN_ABS_SLOPE,
+    MIN_EC_K,
+    CalibrationStore,
+    PHCalibration,
+)
+from hidro.config import (
+    ADCConfig,
+    AppConfig,
+    ConfigError,
+    DS18B20Config,
+    FlowHallConfig,
+    PHAnalogConfig,
+    RelayConfig,
+    TDSAnalogConfig,
+    load_config,
+)
 from hidro.control.safety import SafetyGuard
-from hidro.drivers.base import DoseTooLong, DriverError, PumpNotCalibrated
+from hidro.drivers.ads1115 import ADS1115, read_stable_voltage
+from hidro.drivers.base import (
+    DoseTooLong,
+    DriverError,
+    LatestReadings,
+    PumpNotCalibrated,
+)
+from hidro.drivers.relay import RelayOutput
+from hidro.drivers.tds_analog import calibration_k, gravity_polynomial
 from hidro.logging_setup import setup_logging
 from hidro.settings import Settings
 
@@ -22,6 +49,124 @@ def _settings(verbose: bool = False) -> Settings:
     settings = Settings.from_env()
     setup_logging(settings.log_level if verbose else "WARNING", "text")
     return settings
+
+
+def _require_hardware(config: AppConfig, action: str) -> bool:
+    if config.mode != "hardware":
+        print(
+            f"{action} requiere el modo hardware "
+            "(HIDRO_HARDWARE=hardware)",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
+def _ask_temperature(default_c: float, supplied: float | None) -> float:
+    if supplied is None:
+        raw = input(f"Temperatura de la solución [{default_c:.1f} °C]: ").strip()
+        value = default_c if not raw else float(raw.replace(",", "."))
+    else:
+        value = supplied
+    if not math.isfinite(value) or not -5.0 <= value <= 60.0:
+        raise ValueError("temperatura fuera del rango -5 a 60 °C")
+    return value
+
+
+def _confirm(prompt: str) -> bool:
+    answer = input(f"{prompt} [s/N] ").strip().lower()
+    return answer in {"s", "si", "sí", "y", "yes"}
+
+
+# Una sonda de pH deriva lentamente durante uno o dos minutos: la lectura se da
+# por estable solo si se mantiene dentro de la tolerancia durante 10 s. 2 mV son
+# unos 0,02 pH con la pendiente esperada tras el divisor (~0,12 V/pH).
+PH_TOLERANCE_MV = 2.0
+EC_TOLERANCE_MV = 5.0
+STABLE_WINDOW_S = 10.0
+SAMPLE_INTERVAL_S = 0.5
+PH_STABLE_TIMEOUT_S = 180.0
+EC_STABLE_TIMEOUT_S = 60.0
+PENDING_MAX_AGE = timedelta(hours=1)
+NOMINAL_PH_SLOPE_V = 0.12
+INTERFERENCE_PH = 0.05
+
+
+def _stable_voltage(
+    adc: Any, adc_config: ADCConfig, *, tolerance_mv: float, timeout_s: float
+) -> float:
+    print(
+        f"Leyendo ADS1115 en 0x{adc_config.address:02X}, canal {adc_config.channel}, "
+        f"hasta que varíe menos de {tolerance_mv:g} mV durante {STABLE_WINDOW_S:g} s..."
+    )
+
+    def show(value: float) -> None:
+        print(f"  {value:.4f} V")
+
+    return read_stable_voltage(
+        lambda: adc.read_median_voltage(
+            adc_config.channel, adc_config.gain_v, adc_config.samples
+        ),
+        tolerance_v=tolerance_mv / 1000.0,
+        window=int(STABLE_WINDOW_S / SAMPLE_INTERVAL_S),
+        timeout_s=timeout_s,
+        interval_s=SAMPLE_INTERVAL_S,
+        on_sample=show,
+    )
+
+
+def _probe_temperature(config: AppConfig, sensor_id: str | None) -> float | None:
+    """Temperatura del DS18B20 de `temperature_from`, para proponerla por defecto."""
+    from hidro.drivers.ds18b20 import DS18B20Sensor
+
+    sensor = config.sensor(sensor_id) if sensor_id else None
+    if not isinstance(sensor, DS18B20Config):
+        return None
+    try:
+        probe = DS18B20Sensor(
+            sensor.id, sensor.serial, offset_c=sensor.offset_c, base_path=sensor.base_path,
+            retries=0,
+        )
+    except DriverError:
+        return None
+    reading = probe.read()[0]
+    if reading.quality != "ok":
+        return None
+    print(f"{sensor.id} marca {reading.numeric:.1f} °C (ajústalo si no está en la solución)")
+    return float(reading.numeric)
+
+
+def _hold_tds_off(config: AppConfig, runtime: Any) -> dict[str, RelayOutput]:
+    """Toma y apaga la alimentación de los TDS.
+
+    Con el núcleo detenido el GPIO queda flotando y un TDS energizado altera el
+    pH. Si hidro-core sigue corriendo, el GPIO está ocupado y esto falla con un
+    DriverError: evita calibrar mientras el ciclo usa el mismo ADC y relé.
+    """
+    switches: dict[str, RelayOutput] = {}
+    for sensor in config.sensors:
+        if not isinstance(sensor, TDSAnalogConfig) or not sensor.power_switch:
+            continue
+        output = config.output(sensor.power_switch)
+        if isinstance(output, RelayConfig) and output.id not in switches:
+            switches[output.id] = RelayOutput(
+                output.id,
+                runtime.gpio_output(output.gpio, active_high=output.active_high, initial=False),
+            )
+    return switches
+
+
+def _release(switches: dict[str, RelayOutput]) -> None:
+    for switch in switches.values():
+        switch.off()
+
+
+def _print_core_stop_hint() -> None:
+    print(
+        "Detén hidro-core antes de calibrar; el ADS1115 y el relé no se "
+        "pueden compartir con el ciclo principal:"
+    )
+    print("  docker compose -f compose.yaml -f compose.hardware.yaml stop hidro-core")
 
 
 def cmd_config_check(_args: argparse.Namespace) -> int:
@@ -166,6 +311,349 @@ def cmd_calibrate_flow(args: argparse.Namespace) -> int:
     finally:
         runtime.close()
 
+
+def cmd_calibrate_ph(args: argparse.Namespace) -> int:
+    from hidro.drivers.runtime import RuntimeContext
+
+    settings = _settings(verbose=True)
+    config = load_config(settings.config_path, settings.mode_override)
+    if not _require_hardware(config, "la calibración de pH"):
+        return 2
+
+    point = float(args.point)
+    if not math.isfinite(point) or not 0.0 <= point <= 14.0:
+        print("--point debe estar entre 0 y 14 pH", file=sys.stderr)
+        return 2
+
+    sensors = [sensor for sensor in config.sensors if isinstance(sensor, PHAnalogConfig)]
+    sensor_id = getattr(args, "id", None)
+    if sensor_id is not None:
+        sensors = [sensor for sensor in sensors if sensor.id == sensor_id]
+    if not sensors:
+        print("no se encontró el sensor de pH en la configuración", file=sys.stderr)
+        return 2
+    ph = sensors[0]
+
+    store = CalibrationStore(settings.data_dir / "calibration.yaml")
+    pending = store.ph_pending()
+    replace_pending = False
+    if pending is not None:
+        if abs(point - pending.ph) < 0.01:
+            print(
+                f"Ya hay un punto pendiente de pH {pending.ph:.2f} "
+                f"({pending.voltage:.4f} V)."
+            )
+            if not _confirm("¿Reemplazarlo con una nueva medición?"):
+                print("punto pendiente conservado")
+                return 1
+            replace_pending = True
+        elif abs(point - pending.ph) < 1.0:
+            print(
+                "error: los dos puntos deben diferir al menos 1 pH "
+                f"(pendiente: {pending.ph:.2f})",
+                file=sys.stderr,
+            )
+            return 2
+        age = datetime.now(UTC) - pending.measured_at
+        if not replace_pending and age > PENDING_MAX_AGE:
+            print(
+                f"aviso: el punto pendiente de pH {pending.ph:.2f} tiene "
+                f"{age.total_seconds() / 3600:.1f} h; la sonda pudo derivar desde entonces."
+            )
+            if not _confirm("¿Combinarlo igual con esta medición?"):
+                print("Esta medición quedará como nuevo primer punto.")
+                replace_pending = True
+
+    print(f"Calibración de pH: {ph.id}")
+    _print_core_stop_hint()
+    print("Enjuaga la sonda con agua destilada y sécala suavemente.")
+    print(
+        "La sonda de pH no debe secarse; después de calibrar, vuelve a "
+        "dejarla en agua o en la solución de almacenamiento."
+    )
+    print(f"Coloca la sonda en la solución de pH {point:.2f}.")
+    try:
+        supplied = getattr(args, "temperature", None)
+        probe = _probe_temperature(config, ph.temperature_from) if supplied is None else None
+        default_temp = probe if probe is not None else (
+            pending.t_c if pending is not None else 25.0
+        )
+        temperature = _ask_temperature(default_temp, supplied)
+        print(f"Temperatura de calibración: {temperature:.1f} °C")
+        input("Pulsa Enter cuando la sonda esté en la solución... ")
+
+        runtime = RuntimeContext(config.mode, settings.data_dir, store, LatestReadings())
+        held: dict[str, RelayOutput] = {}
+        try:
+            held = _hold_tds_off(config, runtime)
+            adc = ADS1115(runtime.smbus(1), address=ph.adc.address)
+            voltage = _stable_voltage(
+                adc,
+                ph.adc,
+                tolerance_mv=getattr(args, "tolerance_mv", None) or PH_TOLERANCE_MV,
+                timeout_s=PH_STABLE_TIMEOUT_S,
+            )
+            if not _confirm(
+                f"¿Guardar el punto pH {point:.2f} con {voltage:.4f} V?"
+            ):
+                print("punto descartado")
+                return 1
+
+            if pending is None or replace_pending:
+                store.set_ph_pending(point, voltage, temperature)
+                print(f"Punto pH {point:.2f} guardado como pendiente.")
+                print(
+                    "Enjuaga la sonda y repite el comando con el otro buffer "
+                    "(por ejemplo, --point 4.00)."
+                )
+                return 0
+
+            t_cal = (pending.t_c + temperature) / 2.0
+            if abs(pending.t_c - temperature) > 2.0:
+                print(
+                    "aviso: la temperatura cambió entre los dos puntos; "
+                    f"se usa T_cal={t_cal:.1f} °C",
+                    file=sys.stderr,
+                )
+            candidate = PHCalibration(
+                v1=pending.voltage,
+                ph1=pending.ph,
+                v2=voltage,
+                ph2=point,
+                t_cal=t_cal,
+                calibrated_at=datetime.now(UTC),
+            )
+            slope = candidate.slope
+            if not candidate.slope_is_reasonable():
+                print(
+                    f"error: pendiente {slope:.4f} V/pH fuera del rango "
+                    f"{MIN_ABS_SLOPE:g}–{MAX_ABS_SLOPE:g}; no se guardó. "
+                    "Revisa la sonda y repite el punto.",
+                    file=sys.stderr,
+                )
+                return 2
+            if slope > 0:
+                # El PH-4502C entrega más voltaje cuanto más ácida es la solución.
+                print(
+                    "aviso: la pendiente es positiva; con el PH-4502C debería ser "
+                    "negativa. ¿Se intercambiaron las soluciones o el --point?",
+                    file=sys.stderr,
+                )
+                if not _confirm("¿Guardar de todos modos?"):
+                    print("calibración descartada; el punto pendiente se conserva")
+                    return 1
+            if not _confirm(
+                f"¿Guardar la calibración pH con pendiente {slope:.4f} V/pH?"
+            ):
+                print("calibración descartada; el punto pendiente se conserva")
+                return 1
+            calibration = store.save_ph(
+                v1=pending.voltage,
+                ph1=pending.ph,
+                v2=voltage,
+                ph2=point,
+                t_cal=t_cal,
+            )
+            print(
+                f"Calibración de pH guardada: pendiente "
+                f"{calibration.slope:.4f} V/pH, V7={calibration.v7:.4f} V, "
+                f"T_cal={calibration.t_cal:.1f} °C"
+            )
+            print("hidro-core la usa desde su próxima lectura; vuelve a levantarlo.")
+            return 0
+        finally:
+            _release(held)
+            runtime.close()
+    except (EOFError, KeyboardInterrupt):
+        print("\ncalibración cancelada", file=sys.stderr)
+        return 130
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+
+def cmd_calibrate_ec(args: argparse.Namespace) -> int:
+    from hidro.drivers.runtime import RuntimeContext
+    from hidro.drivers.tds_analog import TDSAnalogSensor
+
+    settings = _settings(verbose=True)
+    config = load_config(settings.config_path, settings.mode_override)
+    if not _require_hardware(config, "la calibración de EC"):
+        return 2
+
+    standard = float(args.standard)
+    if not math.isfinite(standard) or standard <= 0:
+        print("--standard debe ser positivo (µS/cm)", file=sys.stderr)
+        return 2
+
+    sensors = [sensor for sensor in config.sensors if isinstance(sensor, TDSAnalogConfig)]
+    sensor_id = getattr(args, "id", None)
+    if sensor_id is not None:
+        sensors = [sensor for sensor in sensors if sensor.id == sensor_id]
+    if not sensors:
+        print("no se encontró el sensor de EC/TDS en la configuración", file=sys.stderr)
+        return 2
+    tds = sensors[0]
+
+    store = CalibrationStore(settings.data_dir / "calibration.yaml")
+    previous = store.ec()
+
+    print(f"Calibración de EC: {tds.id}")
+    _print_core_stop_hint()
+    print("Enjuaga la sonda con agua destilada y colócala en la solución patrón.")
+    print(f"Solución patrón: {standard:g} µS/cm.")
+    try:
+        supplied = getattr(args, "temperature", None)
+        probe = _probe_temperature(config, tds.temperature_from) if supplied is None else None
+        default_temp = probe if probe is not None else (
+            previous.t_c if previous and previous.t_c is not None else 25.0
+        )
+        temperature = _ask_temperature(default_temp, supplied)
+        print(f"Temperatura de calibración: {temperature:.1f} °C")
+        input("Pulsa Enter cuando la sonda esté en la solución... ")
+
+        runtime = RuntimeContext(config.mode, settings.data_dir, store, LatestReadings())
+        sensor = None
+        held: dict[str, RelayOutput] = {}
+        try:
+            held = _hold_tds_off(config, runtime)
+            switch = held.get(tds.power_switch) if tds.power_switch else None
+            if switch is None:
+                print(
+                    "aviso: el TDS no tiene power_switch configurado; "
+                    "la sonda permanece alimentada",
+                    file=sys.stderr,
+                )
+
+            adc = ADS1115(runtime.smbus(1), address=tds.adc.address)
+            sensor = TDSAnalogSensor(
+                tds.id,
+                adc,
+                store,
+                LatestReadings(),
+                channel=tds.adc.channel,
+                gain_v=tds.adc.gain_v,
+                samples=tds.adc.samples,
+                power_switch=switch,
+                settle_s=tds.settle_s,
+                tds_factor=tds.tds_factor,
+                sleep=time.sleep,
+            )
+            with sensor.powered():
+                voltage = _stable_voltage(
+                    adc,
+                    tds.adc,
+                    tolerance_mv=getattr(args, "tolerance_mv", None) or EC_TOLERANCE_MV,
+                    timeout_s=EC_STABLE_TIMEOUT_S,
+                )
+
+            raw_ec = gravity_polynomial(voltage)
+            k = calibration_k(voltage, temperature, standard)
+            print(f"Voltaje estabilizado: {voltage:.4f} V")
+            print(f"EC de la curva sin calibrar: {raw_ec:.1f} µS/cm")
+            print(f"Factor k calculado: {k:.4f}")
+            if not MIN_EC_K <= k <= MAX_EC_K:
+                print(
+                    f"error: k={k:.4f} fuera del rango {MIN_EC_K:g}–{MAX_EC_K:g}; "
+                    "revisa la sonda, la solución y el cableado",
+                    file=sys.stderr,
+                )
+                return 2
+            if previous is not None:
+                print(f"  k anterior: {previous.k:.4f}")
+            if not _confirm(f"¿Guardar la calibración EC con k={k:.4f}?"):
+                print("calibración descartada")
+                return 1
+            calibration = store.save_ec(
+                k=k,
+                standard_us_cm=standard,
+                voltage=voltage,
+                t_c=temperature,
+            )
+            print(
+                f"Calibración de EC guardada: k={calibration.k:.4f}, "
+                f"patrón={standard:g} µS/cm, T={temperature:.1f} °C"
+            )
+            print("hidro-core la usa desde su próxima lectura; vuelve a levantarlo.")
+            return 0
+        finally:
+            if sensor is not None:
+                sensor.close()
+            _release(held)
+            runtime.close()
+    except (EOFError, KeyboardInterrupt):
+        print("\ncalibración cancelada", file=sys.stderr)
+        return 130
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+
+def cmd_interference(args: argparse.Namespace) -> int:
+    """Mide el pH con el TDS apagado y encendido (sección 4.6 del plan)."""
+    from hidro.drivers.runtime import RuntimeContext
+
+    settings = _settings(verbose=True)
+    config = load_config(settings.config_path, settings.mode_override)
+    if not _require_hardware(config, "la prueba de interferencia"):
+        return 2
+    ph = next((s for s in config.sensors if isinstance(s, PHAnalogConfig)), None)
+    tds = next(
+        (s for s in config.sensors if isinstance(s, TDSAnalogConfig) and s.power_switch), None
+    )
+    if ph is None or tds is None or tds.power_switch is None:
+        print("se necesitan un sensor de pH y un TDS con power_switch", file=sys.stderr)
+        return 2
+
+    store = CalibrationStore(settings.data_dir / "calibration.yaml")
+    calibration = store.ph()
+    slope = abs(calibration.slope) if calibration else NOMINAL_PH_SLOPE_V
+    tolerance_mv = getattr(args, "tolerance_mv", None) or PH_TOLERANCE_MV
+
+    print("Prueba de interferencia pH/TDS")
+    _print_core_stop_hint()
+    print("Pon las dos sondas en el mismo recipiente con agua o solución nutritiva.")
+    runtime = RuntimeContext(config.mode, settings.data_dir, store, LatestReadings())
+    held: dict[str, RelayOutput] = {}
+    try:
+        input("Pulsa Enter cuando estén sumergidas... ")
+        held = _hold_tds_off(config, runtime)
+        adc = ADS1115(runtime.smbus(1), address=ph.adc.address)
+
+        print("pH con el TDS apagado:")
+        off_v = _stable_voltage(adc, ph.adc, tolerance_mv=tolerance_mv, timeout_s=PH_STABLE_TIMEOUT_S)
+        switch = held[tds.power_switch]
+        switch.on()
+        try:
+            time.sleep(tds.settle_s)
+            print("pH con el TDS encendido:")
+            on_v = _stable_voltage(
+                adc, ph.adc, tolerance_mv=tolerance_mv, timeout_s=PH_STABLE_TIMEOUT_S
+            )
+        finally:
+            switch.off()
+
+        delta_v = on_v - off_v
+        delta_ph = abs(delta_v) / slope
+        basis = "calibración" if calibration else f"pendiente nominal {NOMINAL_PH_SLOPE_V:g} V/pH"
+        print(f"Diferencia: {delta_v * 1000:+.1f} mV ≈ {delta_ph:.2f} pH ({basis})")
+        if delta_ph >= INTERFERENCE_PH:
+            print(
+                "Hay interferencia: mantén la secuencia por defecto (TDS apagado al leer pH) "
+                "y anota el resultado en PROGRESS.md."
+            )
+        else:
+            print(
+                f"No se aprecia interferencia (menos de {INTERFERENCE_PH:g} pH). "
+                "Anota el resultado en PROGRESS.md."
+            )
+        return 0
+    except (EOFError, KeyboardInterrupt):
+        print("\nprueba cancelada", file=sys.stderr)
+        return 130
+    finally:
+        _release(held)
+        runtime.close()
 
 def cmd_flow(args: argparse.Namespace) -> int:
     from hidro.drivers.base import LatestReadings
@@ -381,6 +869,50 @@ def build_parser() -> argparse.ArgumentParser:
         "--liters", type=float, default=1.0, help="volumen vertido para calibrar"
     )
     flow_parser.set_defaults(func=cmd_calibrate_flow)
+
+    ph_parser = calibrate_sub.add_parser("ph", help="calibrar pH en dos puntos")
+    ph_parser.add_argument("--point", type=float, required=True, help="pH del buffer")
+    ph_parser.add_argument(
+        "--temperature",
+        type=float,
+        default=None,
+        help="temperatura de la solución en °C (si se omite, se pregunta)",
+    )
+    ph_parser.add_argument(
+        "--tolerance-mv",
+        type=float,
+        default=None,
+        help=f"estabilidad exigida en mV (por defecto {PH_TOLERANCE_MV:g})",
+    )
+    ph_parser.add_argument("--id", default=None, help="id del sensor de pH")
+    ph_parser.set_defaults(func=cmd_calibrate_ph)
+
+    ec_parser = calibrate_sub.add_parser("ec", help="calibrar EC con una solución patrón")
+    ec_parser.add_argument(
+        "--standard", type=float, required=True, help="conductividad del patrón en µS/cm"
+    )
+    ec_parser.add_argument(
+        "--temperature",
+        type=float,
+        default=None,
+        help="temperatura de la solución en °C (si se omite, se pregunta)",
+    )
+    ec_parser.add_argument(
+        "--tolerance-mv",
+        type=float,
+        default=None,
+        help=f"estabilidad exigida en mV (por defecto {EC_TOLERANCE_MV:g})",
+    )
+    ec_parser.add_argument("--id", default=None, help="id del sensor de EC/TDS")
+    ec_parser.set_defaults(func=cmd_calibrate_ec)
+
+    interference_parser = subparsers.add_parser(
+        "interference", help="medir si el TDS encendido altera el pH"
+    )
+    interference_parser.add_argument(
+        "--tolerance-mv", type=float, default=None, help="estabilidad exigida en mV"
+    )
+    interference_parser.set_defaults(func=cmd_interference)
 
     switch_parser = subparsers.add_parser("switch", help="accionar un relé")
     switch_parser.add_argument("id")
