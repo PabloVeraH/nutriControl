@@ -11,7 +11,7 @@ siguiente fase sin cerrar el punto de control humano correspondiente.
 | 1 — Raspberry + sondas de temperatura | En curso; software y documentación listos, validación física pendiente | `fase-1` |
 | 2 — Flotador y relés | En curso; drivers, CLI y verificación listos, validación física pendiente | `fase-2` |
 | 3 — Flujómetro | En curso; driver y calibración listos, validación física pendiente | `fase-3` |
-| 4 — Aire (HTU21D) | Pendiente | — |
+| 4 — Aire (HTU21D) | En curso; driver, cálculos y verificación listos, validación física pendiente | `fase-4` |
 | 5 — pH y TDS (ADS1115) | Pendiente | — |
 | 6 — Bomba y dosificación | Pendiente | — |
 | 7 — Operación | Pendiente | — |
@@ -329,7 +329,75 @@ falta de lectura bloquea la dosificación.
 
 ## Fase 4 — Aire (HTU21D)
 
-Pendiente de hardware.
+**Estado:** en curso. Driver, cálculos, pruebas y verificación listos; falta el
+sensor conectado y la comprobación física.
+**Rama:** `fase-4` (desde `main`) · **Fecha:** 2026-10-22
+
+### Hecho
+
+- Driver real `htu21d`: reset, lectura de temperatura y humedad por I2C,
+  validación CRC-8 y descarte de tramas incompletas o con error de bus.
+- Conversiones de fábrica y publicación de `air_temp`, `air_humidity`,
+  `air_vpd` y `air_dew_point`.
+- `calc.py`: VPD con Tetens y punto de rocío con Magnus, con humedad acotada
+  para evitar valores no físicos o `NaN`.
+- Simulador `MockHTU21DSensor` con los mismos cuatro valores y escenario de
+  desconexión; registro automático en modo mock/hardware.
+- Pruebas del CRC, las conversiones, los valores derivados, las tramas cortas,
+  los errores de bus y el fallo de reset.
+- `scripts/phase4_check.sh`: detiene el núcleo, comprueba `0x40` con
+  `i2cdetect`, valida los cuatro valores y verifica que la humedad sube al
+  soplar; restaura el estado del núcleo al terminar.
+- README con el cableado a 3,3 V, la dirección `0x40`, la lectura manual y la
+  comprobación asistida.
+
+### Bloqueos
+
+- Persisten el acceso SSH sin clave y la falta de hardware de las fases 1, 2 y 3.
+- No hay HTU21D con pines soldados ni un módulo conectado al bus I2C.
+- Sin acceso a la Pi no se puede ejecutar `i2cdetect` ni la comprobación física.
+
+### Tareas
+
+- [x] Driver HTU21D con CRC.
+- [x] VPD y punto de rocío.
+- [x] Simulador y registro del driver.
+- [x] Pruebas unitarias y de errores.
+- [x] Script de verificación y documentación.
+- [ ] Soldar los pines y cablear a 3,3 V, GND, SDA y SCL.
+- [ ] Confirmar `40` en `i2cdetect -y 1`.
+- [ ] Ver temperatura y humedad coherentes con el ambiente.
+- [ ] Soplar sobre el sensor y confirmar que la humedad sube.
+- [ ] Verificar que VPD y punto de rocío son coherentes.
+
+### Punto de control humano
+
+1. `i2cdetect -y 1` muestra el HTU21D en `0x40`.
+2. `hidro read` publica temperatura y humedad coherentes con el ambiente.
+3. Al soplar sobre el sensor, la humedad sube.
+4. `air_vpd` está en kPa, no es negativo, y `air_dew_point` no supera la
+   temperatura del aire.
+
+### Publicación
+
+- Rama `fase-4`, commits `62e6e51`, `cbee075` y `85c9913`, publicada en
+  `origin/fase-4`.
+
+### Revisión
+
+**Rama:** `revision-fase-4` (desde `fase-4`). Cada corrección tiene una prueba
+que falla con el código anterior.
+
+| Hallazgo | Gravedad | Corrección |
+| --- | --- | --- |
+| Una trama de ceros `[0, 0, 0]` pasa el CRC y daba −46,85 °C: alerta falsa de aire frío con el bus trabado o SDA a masa | Alta | Se descartan temperaturas fuera del rango del sensor (−40 a 125 °C) |
+| No se comprobaba el bit de estado que indica si la trama es de temperatura o de humedad | Media | Una trama del tipo equivocado es `invalid` |
+| Las tramas de prueba (`0x6666`, `0x5F5C`) tenían el bit de estado al revés | Técnica | Tramas reales y vectores de CRC de la hoja de datos |
+| Faltaba la compensación de humedad por temperatura de la hoja de datos (hasta ±1,5 %HR entre 15 y 35 °C) | Media | −0,15 %HR/°C respecto de 25 °C, entre 0 y 80 °C |
+| En el fallo solo salían `temp` y `humidity` como `invalid`; `phase4_check.sh` reportaba además "no se publicó" VPD y rocío | Baja | Las cuatro magnitudes salen `invalid` (driver y simulador) |
+| Prueba del aliento: se soplaba antes de arrancar el contenedor de lectura (varios segundos) y la humedad bajaba antes de medir | Media | Se sopla al pulsar Enter y hasta que aparece la lectura |
+| Si `hidro read` fallaba, el script no mostraba el error | Baja | Muestra la salida completa |
+| README: pedía añadir pull-ups (la Pi ya trae 1,8 kΩ en GPIO2/3), no nombraba los pines `+ - DA CL` del módulo y atribuía la parada del núcleo al bus | Baja | Corregido |
 
 ## Fase 5 — pH y TDS (ADS1115)
 

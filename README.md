@@ -4,8 +4,9 @@ Sistema de control y monitoreo para un cultivo hidropónico NFT. El núcleo
 (`hidro-core`) lee sensores, publica en InfluxDB, evalúa reglas de alarma y
 dosificación, y avisa por Telegram. Grafana muestra el estado del cultivo.
 
-Estado actual: **Fase 0** verificada en simulación. Las fases 1, 2 y 3 tienen el
-software y la verificación listos, pendientes del hardware y del acceso a la Pi.
+Estado actual: **Fase 0** verificada en simulación. Las fases 1, 2, 3 y 4
+tienen el software y la verificación listos, pendientes del hardware y del
+acceso a la Pi.
 El detalle de lo hecho, lo verificado y los puntos de control está en
 [`PROGRESS.md`](PROGRESS.md). El diseño completo está en
 [`PLAN_IMPLEMENTACION.md`](PLAN_IMPLEMENTACION.md).
@@ -392,6 +393,50 @@ El caudal se calcula sobre la ventana entre dos lecturas. `hidro read` lee una
 sola vez, justo al arrancar, así que el flujo puede aparecer como `invalid`
 (ventana menor a 1 s); para ver el caudal se usa `hidro flow`.
 
+### Fase 4: aire (HTU21D)
+
+Suelda primero la tira de 4 pines del módulo; un contacto sin soldar da tramas
+con CRC inválido intermitentes. Conexiones del módulo: `+` a **3,3 V** (pin 1,
+nunca 5 V), `-` a GND, `DA` (SDA) a GPIO2 (pin 3) y `CL` (SCL) a GPIO3 (pin 5).
+No hacen falta resistencias de pull-up: la Pi ya trae 1,8 kΩ en GPIO2 y GPIO3,
+y el módulo suele traer las suyas. La dirección es `0x40`.
+
+Con la Pi encendida y el bus I2C activo:
+
+```bash
+i2cdetect -y 1
+```
+
+Debe aparecer `40`. Si no aparece, revisa alimentación, masa, soldaduras y que
+SDA/SCL no estén intercambiados.
+
+La comprobación asistida detiene `hidro-core`, lee el sensor, valida los rangos
+y comprueba que la humedad sube al soplar; al terminar deja el núcleo como estaba:
+
+```bash
+bash scripts/phase4_check.sh air
+```
+
+También se puede hacer a mano. Hay que detener el núcleo porque `hidro read`
+abre todos los GPIO y el bus, y un segundo proceso no puede tomarlos:
+
+```bash
+docker compose -f compose.yaml -f compose.hardware.yaml stop hidro-core
+docker compose -f compose.yaml -f compose.hardware.yaml run --rm --no-deps hidro-core read
+docker compose -f compose.yaml -f compose.hardware.yaml up -d hidro-core
+```
+
+La lectura debe incluir `air_temp`, `air_humidity`, `air_vpd` (kPa) y
+`air_dew_point` (°C). La temperatura y la humedad deben ser coherentes con el
+ambiente; al soplar suavemente sobre el sensor, la humedad debe subir. La humedad
+se compensa por temperatura según la hoja de datos (−0,15 %HR/°C respecto de
+25 °C, entre 0 y 80 °C); el VPD se calcula con Tetens y el punto de rocío con
+Magnus. El driver descarta las tramas con CRC inválido, las que no corresponden
+a la medición pedida (bit de estado) y las temperaturas fuera de −40 a 125 °C:
+una trama de ceros pasa el CRC pero daría −46,85 °C. En esos casos las cuatro
+magnitudes salen `invalid`; revisa el cableado y la longitud de los cables
+I2C. El monitor avisa de que el sensor no tiene lectura.
+
 ## Operación
 
 - Reinicio automático: `restart: unless-stopped` en los tres servicios.
@@ -434,6 +479,6 @@ config/hidro.yaml         # hardware declarado, rangos y reglas
 config/grafana/           # provisioning de datasource, dashboard y alertas
 core/src/hidro/           # paquete: drivers, control, alertas, storage, CLI
 core/tests/               # pruebas sin hardware
-scripts/                  # render de alertas y diagnóstico de la Pi
+scripts/                  # render de alertas, diagnóstico y verificaciones por fase
 deploy.sh                 # PC → Pi por SSH
 ```
