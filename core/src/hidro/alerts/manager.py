@@ -51,7 +51,6 @@ class AlertManager:
         notifier: TelegramNotifier,
         *,
         repeat_critical: timedelta = timedelta(minutes=15),
-        clock: datetime | None = None,
     ) -> None:
         self.notifier = notifier
         self.repeat_critical = repeat_critical
@@ -106,7 +105,12 @@ class AlertManager:
             state.notified = False
             self._maybe_send(state, now)
             return
-        if severity is Severity.CRITICAL and state.notified:
+        if not state.notified:
+            # El envío anterior falló (red caída) o estaba silenciado: reintentar
+            # en cada ciclo; si no, la alarma de flujo podría no llegar nunca.
+            self._maybe_send(state, now)
+            return
+        if severity is Severity.CRITICAL:
             last = state.last_sent or now
             if now - last >= self.repeat_critical:
                 state.notified = False

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
+import httpx
+import pytest
+
 from hidro.alerts.telegram import TelegramNotifier
 
 
@@ -62,3 +65,19 @@ def test_notifier_respects_enabled_flag() -> None:
     notifier = TelegramNotifier("token", "chat", enabled=False, client=client)
     assert notifier.send("hola") is False
     assert client.calls == []
+
+
+def test_send_failure_does_not_log_the_token(caplog: pytest.LogCaptureFixture) -> None:
+    token = "123456:SECRETO"
+
+    class RejectingClient(FakeClient):
+        def post(self, url: str, *, json: dict[str, Any], timeout: float) -> Any:
+            request = httpx.Request("POST", url)
+            response = httpx.Response(404, request=request)
+            raise httpx.HTTPStatusError("404 para " + url, request=request, response=response)
+
+    notifier = TelegramNotifier(token, "chat", client=RejectingClient())
+    with caplog.at_level("ERROR"):
+        assert notifier.send("hola") is False
+    assert "SECRETO" not in caplog.text
+    assert "<token>" in caplog.text

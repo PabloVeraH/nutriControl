@@ -56,7 +56,9 @@ class TelegramNotifier:
             response.raise_for_status()
             return True
         except Exception as exc:
-            logger.error("no se pudo enviar el mensaje de Telegram: %s", exc)
+            # Los errores de httpx incluyen la URL, que contiene el token del bot.
+            detail = str(exc).replace(self.token, "<token>")
+            logger.error("no se pudo enviar el mensaje de Telegram: %s", detail)
             return False
 
     def close(self) -> None:
