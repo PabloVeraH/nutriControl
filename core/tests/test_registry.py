@@ -111,7 +111,7 @@ def test_flow_calibration_overrides_config(tmp_path: Path) -> None:
 
 def test_hardware_flow_disables_debounce(tmp_path: Path) -> None:
     class FakeFlowDevice:
-        when_pressed = None
+        when_activated = None
 
         def close(self) -> None:
             pass

@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import pytest
 from conftest import (
     NOW,
     FakeClock,
@@ -13,9 +14,10 @@ from conftest import (
     make_config,
 )
 
+from hidro import main
 from hidro.bootstrap import build_app
 from hidro.control.dosing import DosingFlags
-from hidro.drivers.base import LatestReadings
+from hidro.drivers.base import DriverError, LatestReadings
 from hidro.heartbeat import read_heartbeat
 from hidro.main import Controller
 from hidro.model import Measurement
@@ -107,6 +109,7 @@ def test_dose_executes_dry_run_and_remembers_time(tmp_path: Path) -> None:
         [
             Measurement("ph", 4.8, "pH", NOW, "ok", "ph"),
             Measurement("ec", 1150.0, "µS/cm", NOW, "ok", "ec"),
+            Measurement("flow", 1.4, "L/min", NOW, "ok", "flow"),
         ]
     )
     app.notifier = RecordingNotifier()
@@ -136,6 +139,7 @@ def test_dose_reports_pump_errors(tmp_path: Path) -> None:
         [
             Measurement("ph", 4.8, "pH", NOW, "ok", "ph"),
             Measurement("ec", 1150.0, "µS/cm", NOW, "ok", "ec"),
+            Measurement("flow", 1.4, "L/min", NOW, "ok", "flow"),
         ]
     )
     app.notifier = RecordingNotifier()
@@ -157,3 +161,29 @@ def test_read_sensors_updates_latest(tmp_path: Path) -> None:
 
 def test_latest_starts_empty() -> None:
     assert LatestReadings().snapshot() == {}
+
+
+def test_stop_reaches_the_pumps(tmp_path: Path) -> None:
+    app = build_app(settings_for(tmp_path), make_config())
+    controller = Controller(app)
+
+    controller.stop()
+
+    assert app.runtime.stop_event.is_set()
+    app.close()
+
+
+def test_run_reports_hardware_errors_at_startup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    def broken_build(*_args: object) -> None:
+        raise DriverError("no existe /dev/gpiochip0")
+
+    monkeypatch.setattr(main.Settings, "from_env", classmethod(lambda cls: settings_for(tmp_path)))
+    monkeypatch.setattr(main, "setup_logging", lambda *_args: None)
+    monkeypatch.setattr(main, "load_config", lambda *_args: make_config())
+    monkeypatch.setattr("hidro.bootstrap.build_app", broken_build)
+
+    with caplog.at_level("ERROR"):
+        assert main.run() == 3
+    assert "gpiochip0" in caplog.text

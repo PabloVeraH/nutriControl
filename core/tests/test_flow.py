@@ -15,13 +15,13 @@ from hidro.drivers.flow_hall import (
 
 class FakeDevice:
     def __init__(self) -> None:
-        self.when_pressed = None
+        self.when_activated = None
         self.closed = False
 
     def pulse(self, count: int = 1) -> None:
         for _ in range(count):
-            assert self.when_pressed is not None
-            self.when_pressed()
+            assert self.when_activated is not None
+            self.when_activated()
 
     def close(self) -> None:
         self.closed = True

@@ -85,7 +85,9 @@ class FlowHallSensor:
         self._clock = clock
         self._last_save = clock()
         try:
-            device.when_pressed = self._on_pulse
+            # DigitalInputDevice no tiene when_pressed (es de Button) y gpiozero
+            # rechaza atributos nuevos: el evento correcto es when_activated.
+            device.when_activated = self._on_pulse
         except Exception as exc:  # pragma: no cover - depende de gpiozero
             raise DriverError(f"no se pudo registrar el flujo {sensor_id}: {exc}") from exc
 
@@ -120,16 +122,6 @@ class FlowHallSensor:
         payload = {"total_l": round(self.counter.total_l, 4)}
         tmp.write_text(json.dumps(payload), encoding="utf-8")
         os.replace(tmp, self.total_path)
-
-    def load_total(self) -> float:
-        if not self.total_path.exists():
-            return 0.0
-        try:
-            data = json.loads(self.total_path.read_text(encoding="utf-8"))
-            return float(data.get("total_l", 0.0))
-        except (ValueError, OSError):
-            logger.warning("no se pudo leer el total de flujo %s", self.total_path)
-            return 0.0
 
     def close(self) -> None:
         self.save_total()

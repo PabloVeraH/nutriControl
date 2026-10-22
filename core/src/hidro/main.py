@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import signal
-import threading
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -11,6 +10,7 @@ from datetime import UTC, datetime
 from hidro.bootstrap import App
 from hidro.config import ConfigError, load_config
 from hidro.control.dosing import DosingFlags, execute_action
+from hidro.drivers.base import DriverError
 from hidro.heartbeat import write_heartbeat
 from hidro.logging_setup import get_logger, setup_logging
 from hidro.model import Measurement
@@ -30,7 +30,9 @@ class Controller:
         self.app = app
         self._clock = clock
         self._sleep = sleep
-        self._stop = threading.Event()
+        # El mismo evento llega a las bombas: SIGTERM corta una dosis en curso
+        # en vez de esperar hasta max_on_s (stop_grace_period es de 30 s).
+        self._stop = app.runtime.stop_event
 
     # ------------------------------------------------------------------ ciclo
 
@@ -202,7 +204,11 @@ def run() -> int:
 
     from hidro.bootstrap import build_app
 
-    app = build_app(settings, config)
+    try:
+        app = build_app(settings, config)
+    except DriverError as exc:
+        logger.error("error de hardware al iniciar: %s", exc)
+        return 3
     Controller(app).run_forever()
     return 0
 
