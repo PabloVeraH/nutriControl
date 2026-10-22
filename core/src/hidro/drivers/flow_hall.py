@@ -17,6 +17,9 @@ from hidro.model import Measurement
 
 logger = get_logger("drivers.flow")
 
+# Con menos tiempo entre muestras el caudal no es representativo.
+MIN_WINDOW_S = 1.0
+
 
 class FlowCounter:
     """Cuenta pulsos y calcula caudal y volumen, con acceso protegido."""
@@ -84,6 +87,9 @@ class FlowHallSensor:
         self.save_every_s = save_every_s
         self._clock = clock
         self._last_save = clock()
+        # Abre la primera ventana: sin esto la primera lectura siempre da 0 L/min.
+        self._last_sample = clock()
+        counter.sample(self._last_sample)
         try:
             # DigitalInputDevice no tiene when_pressed (es de Button) y gpiozero
             # rechaza atributos nuevos: el evento correcto es when_activated.
@@ -96,9 +102,20 @@ class FlowHallSensor:
 
     def read(self) -> list[Measurement]:
         now_mono = self._clock()
+        if now_mono - self._last_sample < MIN_WINDOW_S:
+            # Ventana demasiado corta (p. ej. `hidro read`): no se toma la muestra
+            # para no perder los pulsos de la ventana en curso.
+            logger.info("flujo %s: ventana de medición menor a %.0f s", self.id, MIN_WINDOW_S)
+            return [invalid_measurement(self.id, "L/min", self.id)]
         rate, _total = self.counter.sample(now_mono)
+        self._last_sample = now_mono
         if now_mono - self._last_save >= self.save_every_s:
-            self.save_total()
+            # Un fallo al persistir el total no debe tapar el caudal: sin lectura
+            # no se activaría la alarma crítica.
+            try:
+                self.save_total()
+            except OSError as exc:
+                logger.warning("flujo %s: no se pudo guardar el total: %s", self.id, exc)
             self._last_save = now_mono
 
         if rate < 0:

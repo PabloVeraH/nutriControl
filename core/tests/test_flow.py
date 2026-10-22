@@ -104,3 +104,47 @@ def test_sensor_close_closes_device(tmp_path: Path) -> None:
     )
     sensor.close()
     assert device.closed
+
+
+def test_first_read_measures_since_construction(tmp_path: Path) -> None:
+    clock = FakeClock()
+    device = FakeDevice()
+    sensor = FlowHallSensor("flow", device, FlowCounter(600), tmp_path / "f.json", clock=clock)
+    device.pulse(300)
+    clock.advance(30)
+
+    reading = sensor.read()[0]
+
+    assert reading.quality == "ok"
+    assert reading.value == pytest.approx(1.0)
+
+
+def test_too_short_window_is_invalid_and_keeps_pulses(tmp_path: Path) -> None:
+    clock = FakeClock()
+    device = FakeDevice()
+    sensor = FlowHallSensor("flow", device, FlowCounter(600), tmp_path / "f.json", clock=clock)
+    device.pulse(5)
+    clock.advance(0.2)
+    assert sensor.read()[0].quality == "invalid"
+
+    device.pulse(295)
+    clock.advance(29.8)
+    assert sensor.read()[0].value == pytest.approx(1.0)
+
+
+def test_failed_total_save_still_reports_flow(tmp_path: Path) -> None:
+    clock = FakeClock()
+    device = FakeDevice()
+    blocked = tmp_path / "archivo"
+    blocked.write_text("", encoding="utf-8")
+    # El directorio padre es un archivo: guardar el total lanza OSError.
+    sensor = FlowHallSensor(
+        "flow", device, FlowCounter(600), blocked / "f.json", save_every_s=0, clock=clock
+    )
+    device.pulse(600)
+    clock.advance(60)
+
+    reading = sensor.read()[0]
+
+    assert reading.quality == "ok"
+    assert reading.value == pytest.approx(1.0)

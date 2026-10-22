@@ -304,3 +304,35 @@ def test_parser_accepts_flow() -> None:
 
     assert args.func is cli.cmd_flow
     assert args.seconds == 2.0
+
+
+@pytest.mark.parametrize(("answer", "expected_code"), [("", 1), ("s", 0)])
+def test_calibrate_flow_confirms_outlier(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    answer: str,
+    expected_code: int,
+) -> None:
+    settings = SimpleNamespace(config_path=tmp_path / "hidro.yaml", data_dir=tmp_path, mode_override=None)
+    store = FakeStore()
+    device = FakeFlowDevice()
+    prompts: list[str] = []
+
+    monkeypatch.setattr(cli, "_settings", lambda verbose=True: settings)
+    monkeypatch.setattr(cli, "load_config", lambda *_args: make_config(mode="hardware"))
+    monkeypatch.setattr(cli, "CalibrationStore", lambda _path: store)
+    monkeypatch.setattr("hidro.drivers.runtime.RuntimeContext", lambda *_args: FakeRuntime(device))
+
+    def fake_input(prompt: str = "") -> str:
+        prompts.append(prompt)
+        if len(prompts) == 2:
+            device.pulse(100)  # 100 pulsos/L frente a 5880 de referencia
+        return answer if len(prompts) == 3 else ""
+
+    monkeypatch.setattr("builtins.input", fake_input)
+
+    assert cli.cmd_calibrate_flow(Namespace(id=None, liters=1.0)) == expected_code
+
+    assert "se aleja mucho" in capsys.readouterr().err
+    assert store.saved == (100.0 if expected_code == 0 else None)

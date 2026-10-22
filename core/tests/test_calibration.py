@@ -117,3 +117,23 @@ def test_store_rejects_negative_values(tmp_path: Path) -> None:
         store.save_flow(pulses_per_liter=0)
     with pytest.raises(ValueError):
         store.save_pump("pump", 0)
+
+
+def test_yaml_syntax_error_does_not_crash_reads(tmp_path: Path) -> None:
+    path = tmp_path / "calibration.yaml"
+    path.write_text("flow: {pulses_per_liter: 5000", encoding="utf-8")
+    store = CalibrationStore(path)
+    assert store.flow() is None
+    assert store.ph() is None
+
+
+def test_save_refuses_to_overwrite_an_invalid_file(tmp_path: Path) -> None:
+    path = tmp_path / "calibration.yaml"
+    original = "ph: [no, es, un, mapa]\nec: {k: 1.1, calibrated_at: 2026-01-01T00:00:00Z}\n"
+    path.write_text(original, encoding="utf-8")
+    store = CalibrationStore(path)
+
+    with pytest.raises(ValueError, match="no es válido"):
+        store.save_flow(pulses_per_liter=5000)
+
+    assert path.read_text(encoding="utf-8") == original
