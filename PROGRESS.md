@@ -175,7 +175,8 @@ la prueba física.
 - `relay`: salida on/off con `active_high`, sin estado residual al cerrar;
   pruebas de delegación y propagación de errores.
 - CLI `hidro switch <id> on|off [--seconds N]`, con apagado garantizado al
-  terminar o interrumpir.
+  terminar o interrumpir; pruebas de encendido, apagado, interrupción, bomba
+  rechazada y salida inexistente.
 - Apagado ordenado con `SIGTERM`/`SIGINT`: todas las salidas se apagan antes de
   cerrar. Se agregaron pruebas de `_shutdown` (todas las salidas apagadas y
   tolerancia a fallos de una salida).
