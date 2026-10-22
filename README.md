@@ -102,6 +102,7 @@ Dentro del contenedor (o con el paquete instalado en el host):
 | `hidro calibrate flow [--liters N]` | Calibra los pulsos por litro del flujómetro |
 | `hidro calibrate ph --point 6.86\|4.00 [--temperature T]` | Calibra el pH en dos puntos |
 | `hidro calibrate ec --standard 1413 [--temperature T]` | Calibra el factor k del TDS/EC |
+| `hidro interference` | Mide si el TDS encendido altera el pH |
 | `hidro switch <id> on\|off [--seconds N]` | Acciona un relé (por defecto 5 s) |
 | `hidro pump <id> --ml N [--yes]` | Dosifica con una bomba peristáltica |
 | `hidro alert-test` | Envía un mensaje de prueba a Telegram |
@@ -277,8 +278,13 @@ Copia los dos seriales en `config/hidro.yaml` (`water_temp_1` y
 
 ```bash
 docker compose -f compose.yaml -f compose.hardware.yaml exec hidro-core ls /sys/bus/w1/devices
-docker compose -f compose.yaml -f compose.hardware.yaml exec hidro-core hidro read
+docker compose -f compose.yaml -f compose.hardware.yaml stop hidro-core
+docker compose -f compose.yaml -f compose.hardware.yaml run --rm --no-deps hidro-core read
+docker compose -f compose.yaml -f compose.hardware.yaml up -d hidro-core
 ```
+
+`hidro read` abre todos los GPIO declarados; con el núcleo corriendo están
+ocupados, por eso se detiene antes (con `exec` fallaría).
 
 Hasta que se conecten los sensores de las fases siguientes, sus lecturas
 aparecerán como `invalid`; es lo esperado. Si Telegram está activo, llegará un
@@ -472,12 +478,24 @@ docker compose -f compose.yaml -f compose.hardware.yaml run --rm --no-deps \
   hidro-core calibrate ph --point 4.00
 ```
 
-Cada comando pregunta la temperatura de la solución (o usa `--temperature T`),
-pide enjuagar y colocar la sonda, y espera a que el voltaje se estabilice. Muestra
-cada lectura y pide confirmación antes de guardar. Si el segundo punto produce
-una pendiente fuera de `0,02–0,60 V/pH`, no guarda nada y conserva el primer
-punto para reintentar. Al guardar, el punto pendiente desaparece y se muestra
-la pendiente, `V7` y `T_cal`.
+Cada comando pregunta la temperatura de la solución (o usa `--temperature T`);
+propone la del DS18B20 de `temperature_from` si está disponible, así que conviene
+meter esa sonda en la solución. Pide enjuagar y colocar la sonda y espera a que
+el voltaje varíe menos de 2 mV (unos 0,02 pH) durante 10 s, con un máximo de
+3 min: una sonda de pH deriva lentamente uno o dos minutos y una lectura
+apresurada calibra a mitad de la deriva. Si el ruido no deja estabilizar, afloja
+la exigencia con `--tolerance-mv 4`. Mientras mide, el comando mantiene apagado
+`tds_power`: con el núcleo detenido ese GPIO queda flotando y el TDS energizado
+alteraría el pH. Si el núcleo sigue corriendo, el comando falla porque el GPIO
+está ocupado.
+
+Muestra cada lectura y pide confirmación antes de guardar. Si el segundo punto
+produce una pendiente fuera de `0,02–0,60 V/pH`, no guarda nada y conserva el
+primer punto para reintentar. Si la pendiente es positiva (el PH-4502C entrega
+más voltaje cuanto más ácida es la solución), probablemente se intercambiaron
+las soluciones o el `--point`, y pide confirmación. Si el primer punto tiene más
+de 1 h, ofrece usar la nueva medición como primer punto. Al guardar, el punto
+pendiente desaparece y se muestra la pendiente, `V7` y `T_cal`.
 
 Para el TDS/EC usa la solución patrón de 1413 µS/cm a la misma temperatura:
 
@@ -487,25 +505,38 @@ docker compose -f compose.yaml -f compose.hardware.yaml run --rm --no-deps \
 ```
 
 El comando enciende `tds_power`, espera `settle_s` (2 s), estabiliza la lectura
-y apaga el relé incluso si falla la medición. Calcula `k` y lo rechaza si queda
+(5 mV durante 10 s, máximo 1 min; ajustable con `--tolerance-mv`) y apaga el
+relé incluso si falla la medición. Calcula `k` y lo rechaza si queda
 fuera de `0,1–10`, para no guardar una calibración absurda; pide confirmación y
 lo escribe en `/data/calibration.yaml`. Si tienes un medidor de lápiz o una
 tercera solución, verifica la lectura antes de dar la calibración por buena.
 
-Vuelve a levantar el núcleo y revisa que pH y EC tengan `quality=ok` y valores
+El núcleo lee la calibración en cada ciclo: no hace falta reiniciarlo para
+aplicarla. Antes de levantarlo, revisa que pH y EC tengan `quality=ok` y valores
 coherentes:
 
 ```bash
+docker compose -f compose.yaml -f compose.hardware.yaml run --rm --no-deps hidro-core read
 docker compose -f compose.yaml -f compose.hardware.yaml up -d hidro-core
-docker compose -f compose.yaml -f compose.hardware.yaml exec hidro-core hidro read
 ```
 
-Prueba de interferencia: mide pH con el TDS apagado y luego con `tds_power`
-encendido. El núcleo ya lee el pH antes de encender el TDS y lo apaga al
-terminar, pero si las dos sondas están en el mismo recipiente y el pH cambia de
-forma apreciable, deja la secuencia por defecto y anota el resultado en
-`PROGRESS.md`. La calibración de pH se considera vencida a los 30 días; el
-núcleo marca la lectura como `suspect` y avisa.
+Prueba de interferencia, con las dos sondas en el mismo recipiente y el núcleo
+detenido:
+
+```bash
+docker compose -f compose.yaml -f compose.hardware.yaml run --rm --no-deps \
+  hidro-core interference
+```
+
+Mide el pH estable con el TDS apagado, enciende `tds_power`, espera `settle_s`,
+vuelve a medir y lo apaga siempre. Informa la diferencia en mV y en pH (con la
+calibración, o con una pendiente nominal de 0,12 V/pH si aún no hay). Con
+0,05 pH o más hay interferencia: se mantiene la secuencia por defecto (el núcleo
+lee el pH con el TDS apagado). Anota el resultado en `PROGRESS.md`.
+
+La calibración de pH se considera vencida a los 30 días. Una lectura de pH o EC
+`suspect` (calibración vencida, anómala o ausente, o sin temperatura del agua)
+genera un aviso por Telegram y bloquea la dosificación hasta corregirla.
 
 ## Operación
 

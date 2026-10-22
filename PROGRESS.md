@@ -478,6 +478,32 @@ Los comandos concretos están en el README, sección "Fase 5: pH y TDS
   `origin/fase-5`. La calibración física y el punto de control siguen
   pendientes de hardware y soluciones.
 
+### Revisión
+
+**Rama:** `revision-fase-5` (desde `fase-5`). Cada corrección tiene una prueba
+que falla con el código anterior.
+
+| Hallazgo | Gravedad | Corrección |
+| --- | --- | --- |
+| Con el núcleo detenido el GPIO de `tds_power` queda flotando: el TDS podía quedar energizado durante la calibración de pH y alterarla | Alta | `calibrate ph` toma `tds_power` y lo mantiene apagado |
+| Nada impedía calibrar con el núcleo corriendo (comparte el ADS1115 y conmuta el relé cada ciclo) | Alta | Al tomar `tds_power`, el GPIO ocupado aborta con un mensaje claro |
+| La estabilidad (3 muestras en 1,5 s, 10 mV ≈ 0,08 pH, máximo 30 s) aceptaba una sonda todavía en deriva | Alta | 2 mV durante 10 s (pH, máximo 3 min) y 5 mV (EC, máximo 1 min); ajustable con `--tolerance-mv` |
+| No existía forma de hacer la prueba de interferencia pH/TDS del plan: el núcleo y `hidro read` siempre leen el pH con el TDS apagado | Media | Nuevo `hidro interference` |
+| Una pendiente positiva (soluciones o `--point` intercambiados) se aceptaba | Media | Pide confirmación |
+| Un punto pendiente de días atrás se combinaba con el nuevo | Media | Con más de 1 h ofrece usar la nueva medición como primer punto |
+| La temperatura de calibración se pedía a mano, aunque el plan la toma del DS18B20 | Baja | Se propone la lectura de `temperature_from` |
+| Una lectura `suspect` (calibración vencida o anómala, EC sin calibrar, sin temperatura) solo quedaba en el log; la dosificación se bloqueaba sin aviso | Media | Aviso por Telegram (`quality-<id>`) |
+| El CLI pedía reiniciar el núcleo tras calibrar pH/EC, pero el driver lee la calibración en cada ciclo | Baja | Mensaje corregido |
+| README de las fases 1 y 5: `exec hidro-core hidro read` falla en la Pi porque el núcleo tiene los GPIO | Media | Se detiene el núcleo y se usa `run --rm` |
+| `ph_analog` duplicaba la matemática de `PHCalibration` (`calibrate_two_points` y otras) y tenía código muerto | Baja | Eliminado; el CLI usa `PHCalibration` |
+
+Sin cambios:
+
+- Los valores nominales de los buffers varían con la temperatura (6,86 es 6,90
+  a 15 °C). El error es de unas 0,04 pH, menor que la precisión del PH-4502C.
+- Las tolerancias de estabilidad son estimaciones sin hardware; se ajustan en
+  la primera calibración real con `--tolerance-mv`.
+
 ## Fase 6 — Bomba y dosificación
 
 Pendiente de hardware (fuente de 12 V).
