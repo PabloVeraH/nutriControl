@@ -3,7 +3,15 @@ from __future__ import annotations
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from conftest import NOW, FakeClock, FakePump, RecordingNotifier, base_config_dict, make_config
+from conftest import (
+    NOW,
+    FakeClock,
+    FakePump,
+    FakeSwitch,
+    RecordingNotifier,
+    base_config_dict,
+    make_config,
+)
 
 from hidro.bootstrap import build_app
 from hidro.control.dosing import DosingFlags
@@ -42,6 +50,30 @@ def test_controller_runs_one_cycle_and_writes_heartbeat(tmp_path: Path) -> None:
 
     assert read_heartbeat(app.settings.data_dir) is not None
     assert observed["ph"] is not None
+
+
+def test_shutdown_turns_off_all_outputs(tmp_path: Path) -> None:
+    app = build_app(settings_for(tmp_path), make_config())
+    for output in app.outputs.values():
+        output.on()
+    assert all(output.is_on for output in app.outputs.values())
+
+    Controller(app)._shutdown()
+
+    assert all(not output.is_on for output in app.outputs.values())
+
+
+def test_shutdown_continues_when_an_output_fails(tmp_path: Path) -> None:
+    class FailingSwitch(FakeSwitch):
+        def off(self) -> None:
+            raise RuntimeError("falla al apagar")
+
+    app = build_app(settings_for(tmp_path), make_config())
+    app.outputs["roto"] = FailingSwitch("roto")
+
+    Controller(app)._shutdown()
+
+    assert all(not output.is_on for output in app.outputs.values() if output.id != "roto")
 
 
 def test_read_sensors_skips_failures(tmp_path: Path) -> None:

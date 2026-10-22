@@ -280,6 +280,56 @@ sonda en la mano y ver subir su temperatura en Grafana.
 Si una sonda marca 85 °C o CRC inválida, revisa el cableado, la resistencia de
 4,7 kΩ y que el serial del YAML coincida con el del bus.
 
+### Fase 2: flotador y relés
+
+Cablea el flotador (sección 4.3 del plan: GPIO17 con pull-down de 10 kΩ) y el
+módulo de relés (4.7: puente en **High**, `DC+` a 5 V, canales en GPIO22 y
+GPIO23). **No conectes cargas todavía.**
+
+El valor de `low_when` depende de la orientación física del flotador:
+
+- `low_when: 0` si entrega `0` cuando el estanque está bajo.
+- `low_when: 1` si la lógica está invertida.
+
+Para comprobarlo hay que detener el núcleo: los GPIO quedan tomados por
+`hidro-core` y un segundo proceso no puede abrirlos.
+
+```bash
+docker compose -f compose.yaml -f compose.hardware.yaml stop hidro-core
+docker compose -f compose.yaml -f compose.hardware.yaml run --rm --no-deps hidro-core read
+```
+
+Mueve el flotador y repite la lectura. Ajusta `low_when` en `config/hidro.yaml`
+hasta que `tank_level_low` valga `sí` solo con el nivel bajo.
+
+Los relés se prueban sin carga:
+
+```bash
+docker compose -f compose.yaml -f compose.hardware.yaml run --rm --no-deps \
+  hidro-core switch tds_power on --seconds 3
+docker compose -f compose.yaml -f compose.hardware.yaml run --rm --no-deps \
+  hidro-core switch tds_power off
+```
+
+El canal 1 (bomba, GPIO22) se puede comprobar en el host con
+`pinctrl set 22 op dh`, esperar y `pinctrl set 22 op dl`; con la aplicación se
+prueba en la Fase 6. `hidro switch` rechaza las bombas peristálticas a
+propósito: para dosificar se usa `hidro pump` con la bomba calibrada.
+
+La verificación asistida hace todo lo anterior y además prueba el apagado:
+
+```bash
+bash scripts/phase2_check.sh
+```
+
+Pide confirmar que no hay cargas, detiene y restaura `hidro-core`, comprueba el
+flotador, acciona `tds_power` y guía las pruebas de robustez:
+
+- **SIGTERM:** `docker compose stop hidro-core` debe apagar todas las salidas.
+- **SIGKILL:** `docker compose kill hidro-core` mientras `tds_power` está
+  energizado. Si el relé queda activo o indeterminado, hay que añadir una
+  resistencia pull-down en la entrada del módulo o usar el contacto NC antes de
+  conectar cargas. El resultado se registra en `PROGRESS.md`.
 
 ## Operación
 

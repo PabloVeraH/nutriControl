@@ -9,7 +9,7 @@ siguiente fase sin cerrar el punto de control humano correspondiente.
 | --- | --- | --- |
 | 0 — Esqueleto en el PC (mock) | Implementada y verificada; checkpoint de Telegram pendiente | `fase-0` |
 | 1 — Raspberry + sondas de temperatura | En curso; software y documentación listos, validación física pendiente | `fase-1` |
-| 2 — Flotador y relés | Pendiente | — |
+| 2 — Flotador y relés | En curso; drivers, CLI y verificación listos, validación física pendiente | `fase-2` |
 | 3 — Flujómetro | Pendiente | — |
 | 4 — Aire (HTU21D) | Pendiente | — |
 | 5 — pH y TDS (ADS1115) | Pendiente | — |
@@ -159,11 +159,61 @@ Los comandos concretos están en el README, sección
 
 ### Publicación
 
-- Rama `fase-1`, commit `09459e9`, publicada en `origin/fase-1`.
+- Rama `fase-1`, commits `09459e9`, `457e522` y `44b4bc8`, publicada en
+  `origin/fase-1`.
 
-## Fase 2 — Flotador y relés
+## Fase 2 — Flotador y relés (sin carga)
 
-Pendiente de hardware.
+**Estado:** en curso. Drivers, CLI y verificación listos; falta el cableado y
+la prueba física.
+**Rama:** `fase-2` · **Fecha:** 2026-10-22
+
+### Hecho
+
+- `float_switch`: antirrebote configurable y detección de nivel bajo según
+  `low_when`; pruebas de estado inicial, debounce y rebote.
+- `relay`: salida on/off con `active_high`, sin estado residual al cerrar;
+  pruebas de delegación y propagación de errores.
+- CLI `hidro switch <id> on|off [--seconds N]`, con apagado garantizado al
+  terminar o interrumpir.
+- Apagado ordenado con `SIGTERM`/`SIGINT`: todas las salidas se apagan antes de
+  cerrar. Se agregaron pruebas de `_shutdown` (todas las salidas apagadas y
+  tolerancia a fallos de una salida).
+- `scripts/phase2_check.sh`: guía el flotador, el relé `tds_power` y las pruebas
+  de `SIGTERM`/`SIGKILL`, deteniendo y restaurando `hidro-core`.
+- README con el cableado, `low_when`, exclusividad de GPIO, prueba del canal 1
+  con `pinctrl` y mitigaciones de robustez.
+- El CLI rechaza las bombas peristálticas en `switch`; el canal 1 se valida con
+  `pinctrl` o en la Fase 6.
+
+### Bloqueos
+
+- Persisten el acceso SSH sin clave y la falta de hardware de las fases 1 y 2.
+- No se ejecutó `scripts/phase2_check.sh` ni la prueba física de stop/kill.
+
+### Tareas
+
+- [x] Drivers y pruebas.
+- [x] CLI `hidro switch`.
+- [x] Apagado ordenado y pruebas.
+- [x] Verificación asistida.
+- [ ] Cablear flotador y módulo de relés sin carga.
+- [ ] Confirmar `low_when` con el flotador.
+- [ ] Confirmar el clic de `tds_power` y del canal 1.
+- [ ] Ejecutar stop/kill y registrar el estado del relé.
+- [ ] Definir la mitigación si el relé queda activo tras `SIGKILL`.
+
+### Punto de control humano
+
+1. `tank_level_low` cambia al mover el flotador y `low_when` queda correcto.
+2. El módulo de relés hace clic con `hidro switch` y con `pinctrl`.
+3. Tras `docker compose stop`, el relé queda apagado.
+4. Tras `docker compose kill`, el usuario describe el estado del relé.
+5. Si el relé queda activo, se acuerda la mitigación antes de conectar cargas.
+
+### Publicación
+
+- Rama `fase-2`, pendiente de publicar al cerrar este registro.
 
 ## Fase 3 — Flujómetro
 
