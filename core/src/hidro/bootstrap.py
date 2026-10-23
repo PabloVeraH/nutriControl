@@ -72,6 +72,7 @@ def build_app(settings: Settings, config: AppConfig) -> App:
     alerts = AlertManager(
         notifier,
         repeat_critical=timedelta(minutes=config.alerts.telegram.repeat_critical_every_min),
+        silence_path=settings.data_dir / "silence.json",
     )
     storage = InfluxStorage(settings.influx)
     safety = SafetyGuard(settings.data_dir / "safety.json", config.dosing.limits)

@@ -7,6 +7,7 @@ import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 
+from hidro.alerts.commands import TelegramCommandBot, TelegramCommandHandler
 from hidro.bootstrap import App
 from hidro.config import ConfigError, load_config
 from hidro.control.dosing import DosingFlags, execute_action
@@ -14,9 +15,14 @@ from hidro.drivers.base import DriverError
 from hidro.heartbeat import write_heartbeat
 from hidro.logging_setup import get_logger, setup_logging
 from hidro.model import Measurement
+from hidro.reporting import DailySummary, build_daily_summary, build_status_text
 from hidro.settings import Settings
 
 logger = get_logger("main")
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 class Controller:
@@ -26,13 +32,32 @@ class Controller:
         *,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
+        wall_clock: Callable[[], datetime] = _utc_now,
     ) -> None:
         self.app = app
         self._clock = clock
         self._sleep = sleep
+        self._wall_clock = wall_clock
+        self._started_at = self._wall_clock()
         # El mismo evento llega a las bombas: SIGTERM corta una dosis en curso
         # en vez de esperar hasta max_on_s (stop_grace_period es de 30 s).
         self._stop = app.runtime.stop_event
+        self._commands = TelegramCommandBot(
+            app.notifier,
+            TelegramCommandHandler(
+                alerts=app.alerts,
+                status_provider=self._status_text,
+                allowed_chat_ids=[app.notifier.chat_id],
+                timezone=app.settings.timezone,
+            ),
+            offset_path=app.settings.data_dir / "telegram_offset.json",
+        )
+        self._summary = DailySummary(
+            app.notifier,
+            at=app.config.alerts.daily_summary_at,
+            timezone=app.settings.timezone,
+            state_path=app.settings.data_dir / "daily_summary.json",
+        )
 
     # ------------------------------------------------------------------ ciclo
 
@@ -46,7 +71,7 @@ class Controller:
         try:
             while not self._stop.is_set():
                 started = self._clock()
-                now = datetime.now(UTC)
+                now = self._wall_clock()
                 measurements = self._read_sensors()
                 result = self.app.monitor.evaluate(now)
 
@@ -67,6 +92,9 @@ class Controller:
                 self.app.storage.write_measurements(measurements)
                 self.app.storage.write_heartbeat(now, cycle, config.mode)
                 write_heartbeat(self.app.settings.data_dir, now, cycle)
+                self._commands.poll(now)
+                if self._summary.is_due(now):
+                    self._summary.maybe_send(now, self._daily_summary_text(now))
                 cycle += 1
 
                 elapsed = self._clock() - started
@@ -162,6 +190,35 @@ class Controller:
 
         if decision.actions:
             self.app.dosing.last_dose_at = now
+
+    def _status_text(self, now: datetime) -> str:
+        return build_status_text(
+            config=self.app.config,
+            latest=self.app.latest,
+            alerts=self.app.alerts,
+            safety=self.app.safety,
+            dosing=self.app.dosing,
+            outputs=self.app.outputs,
+            calibration=self.app.calibration,
+            now=now,
+            timezone=self.app.settings.timezone,
+            started_at=self._started_at,
+        )
+
+    def _daily_summary_text(self, now: datetime) -> str:
+        return build_daily_summary(
+            config=self.app.config,
+            latest=self.app.latest,
+            alerts=self.app.alerts,
+            safety=self.app.safety,
+            dosing=self.app.dosing,
+            outputs=self.app.outputs,
+            calibration=self.app.calibration,
+            now=now,
+            timezone=self.app.settings.timezone,
+            started_at=self._started_at,
+            daily=self.app.storage.daily_stats(),
+        )
 
     def _shutdown(self) -> None:
         logger.info("deteniendo hidro-core")

@@ -184,6 +184,17 @@ def test_validator_rejects_unknown_adc_gain() -> None:
         AppConfig.model_validate(raw)
 
 
+def test_daily_summary_time_is_normalized() -> None:
+    config = make_config(alerts={"daily_summary_at": "9:5"})
+    assert config.alerts.daily_summary_at == "09:05"
+
+
+@pytest.mark.parametrize("value", ["9", "09:00:00", "24:00", "12:60", "nueve"])
+def test_daily_summary_time_is_validated(value: str) -> None:
+    with pytest.raises(Exception, match="daily_summary_at"):
+        make_config(alerts={"daily_summary_at": value})
+
+
 def test_extra_fields_are_rejected() -> None:
     raw = base_config_dict()
     raw["campo_extra"] = True

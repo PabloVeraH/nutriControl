@@ -14,7 +14,7 @@ siguiente fase sin cerrar el punto de control humano correspondiente.
 | 4 — Aire (HTU21D) | En curso; driver, cálculos y verificación listos, validación física pendiente | `fase-4` |
 | 5 — pH y TDS (ADS1115) | En curso; drivers, CLI y verificación listos, validación física pendiente | `fase-5` |
 | 6 — Bomba y dosificación | En curso; software, calibración y pruebas listos, validación física y `dry_run` pendientes | `fase-6` |
-| 7 — Operación | Pendiente | — |
+| 7 — Operación | En curso; software y documentación listos, checkpoint humano pendiente | `fase-7` |
 
 ## Fase 0 — Esqueleto en el PC
 
@@ -622,4 +622,70 @@ Rama `revision-fase-6` (desde `fase-6`). Hallazgos corregidos:
 
 ## Fase 7 — Operación
 
-Pendiente.
+**Estado:** en curso. Software y documentación listos; falta el punto de control
+humano y la validación con Telegram y hardware reales.
+**Rama:** `fase-7` · **Fecha:** 2026-10-22
+
+### Hecho
+
+- Alerta de Grafana "hidro-core sin datos": consulta los últimos 10 minutos,
+  usa `noDataState: Alerting` y `for: 0m`, por lo que avisa al dejar de recibir
+  latidos sin sumar una segunda espera.
+- Resumen diario a la hora local configurada en `alerts.daily_summary_at`
+  (09:00 por defecto): lecturas actuales, mínimo/promedio/máximo de las últimas
+  24 h, dosis aplicadas, alertas activas, silencio, bloqueos, estado de
+  dosificación, calibración de pH y salidas encendidas.
+- El resumen se envía una vez por día y guarda su estado en
+  `/data/daily_summary.json`; si Telegram falla, reintenta en el ciclo
+  siguiente sin duplicar el envío ya confirmado.
+- Comandos `/estado` (alias `/status`) y `/silenciar [minutos]` por Telegram,
+  más `/ayuda`. Solo se aceptan mensajes de `TELEGRAM_CHAT_ID`; otros chats se
+  ignoran y quedan en el log.
+- `/silenciar` acepta de 0 a 1440 minutos (60 por defecto), persiste en
+  `/data/silence.json` y nunca silencia las alertas críticas.
+- El offset de `getUpdates` se guarda en `/data/telegram_offset.json` para no
+  repetir comandos tras un reinicio.
+- `scripts/backup.sh`: respaldo en caliente de `hidro_data`, del bucket de
+  InfluxDB, de `config/hidro.yaml` y de un manifiesto con fecha, rama y commit.
+- `scripts/restore.sh`: restauración con confirmación, detención de
+  `hidro-core` y Grafana, restauración del volumen y del bucket, y arranque
+  posterior del stack con `compose.hardware.yaml` por defecto.
+- Documentación de operación diaria, comandos, cuidado y recalibración mensual
+  del pH, respaldos, restauración, actualización y punto de control de la fase.
+- Pruebas nuevas de comandos, autorización, silencio persistente, resumen
+  diario, reintentos, estado, configuración de la hora, alertas de Grafana y
+  renderizado del contacto de Telegram.
+
+### Verificación
+
+- `pytest`: 354 pruebas aprobadas, 90,69 % de cobertura.
+- `ruff check src tests` y `mypy src`: sin hallazgos.
+- `bash -n` sobre `scripts/backup.sh`, `scripts/restore.sh` y `deploy.sh`:
+  sintaxis correcta.
+- `scripts/backup.sh` se ejecutó contra el stack mock local: generó
+  `hidro-data.tgz`, el respaldo del bucket, `hidro.yaml` y `manifest.txt`.
+- El respaldo del bucket se restauró con `influx restore --full` en una
+  instancia InfluxDB desechable y se recuperaron los datos de `hidro`.
+- Las consultas Flux de mín/promedio/máximo y dosis se ejecutaron contra el
+  InfluxDB mock local y devolvieron las tablas esperadas.
+- `scripts/restore.sh` completo (volumen + bucket + reinicio del stack) todavía
+  no se ejecutó; falta probarlo en la Pi.
+- La alerta real, el resumen y los comandos no se probaron con el token y el
+  chat reales porque `TELEGRAM_BOT_TOKEN` y `TELEGRAM_CHAT_ID` siguen sin
+  configurar en esta estación.
+
+### Pendiente
+
+- Configurar el bot y el chat autorizado, y recibir el resumen diario real.
+- Probar `/estado` y `/silenciar` desde el chat autorizado, confirmando que las
+  alertas críticas siguen llegando.
+- Detener `hidro-core` a propósito y recibir en Telegram la alerta "hidro-core
+  sin datos" de Grafana.
+- Ejecutar un respaldo y una restauración de prueba en la Pi.
+- Revisar la guía de operación con el usuario y cerrar el punto de control.
+
+### Punto de control humano
+
+No se marca la fase como cerrada hasta completar los pasos anteriores y
+registrar la fecha, el resultado de la alerta real y el resultado de la
+restauración. La dosificación debe permanecer en `dry_run: true`.

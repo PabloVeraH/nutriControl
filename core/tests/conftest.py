@@ -41,10 +41,15 @@ class RecordingNotifier(TelegramNotifier):
             enabled=configured,
         )
         self.messages: list[str] = []
+        self.requested_offsets: list[int | None] = []
 
     def send(self, text: str) -> bool:
         self.messages.append(text)
         return True
+
+    def get_updates(self, offset: int | None = None) -> list[dict[str, Any]]:
+        self.requested_offsets.append(offset)
+        return []
 
 
 class FakeSwitch:

@@ -5,6 +5,7 @@
 
 # Datos locales (calibraciones, heartbeat, contadores)
 data/
+backups/
 
 # Material de referencia local (no forma parte del proyecto)
 docs/

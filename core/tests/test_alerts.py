@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from pathlib import Path
 
 from conftest import NOW, RecordingNotifier
 
@@ -111,12 +112,52 @@ def test_silence_suppresses_non_critical_but_not_critical() -> None:
     )
     assert len(notifier.messages) == 1
 
+    manager.report(
+        "flow",
+        active=False,
+        severity=Severity.CRITICAL,
+        message="flujo cero",
+        now=NOW + timedelta(minutes=7),
+        resolved_message="flujo normal",
+    )
+    assert len(notifier.messages) == 2
+    assert "NORMALIZADO" in notifier.messages[1]
+
 
 def test_silence_expires() -> None:
     notifier = RecordingNotifier()
     manager = AlertManager(notifier)
     manager.silence_for(10, NOW)
     assert not manager.is_silenced(NOW + timedelta(minutes=11))
+
+
+def test_silence_survives_restart(tmp_path: Path) -> None:
+    path = tmp_path / "silence.json"
+    manager = AlertManager(RecordingNotifier(), silence_path=path)
+    manager.silence_for(30, NOW)
+
+    restarted = AlertManager(RecordingNotifier(), silence_path=path)
+    assert restarted.is_silenced(NOW + timedelta(minutes=5))
+    assert restarted.silenced_until == NOW + timedelta(minutes=30)
+    assert path.exists()
+
+
+def test_expired_silence_is_cleared_from_disk(tmp_path: Path) -> None:
+    path = tmp_path / "silence.json"
+    manager = AlertManager(RecordingNotifier(), silence_path=path)
+    manager.silence_for(10, NOW)
+
+    assert not manager.is_silenced(NOW + timedelta(minutes=11))
+    restarted = AlertManager(RecordingNotifier(), silence_path=path)
+    assert restarted.silenced_until is None
+
+
+def test_active_alerts_exposes_current_messages() -> None:
+    manager = AlertManager(RecordingNotifier())
+    manager.report(
+        "ec", active=True, severity=Severity.MEDIUM, message="EC alta", now=NOW
+    )
+    assert manager.active_alerts == {"ec": "EC alta"}
 
 
 class FlakyNotifier(RecordingNotifier):
