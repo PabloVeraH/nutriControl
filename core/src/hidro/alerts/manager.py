@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import json
+import os
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
+from pathlib import Path
 
 from hidro.alerts.telegram import TelegramNotifier
 from hidro.logging_setup import get_logger
@@ -51,11 +54,13 @@ class AlertManager:
         notifier: TelegramNotifier,
         *,
         repeat_critical: timedelta = timedelta(minutes=15),
+        silence_path: Path | None = None,
     ) -> None:
         self.notifier = notifier
         self.repeat_critical = repeat_critical
         self._states: dict[str, AlertState] = {}
-        self._silenced_until: datetime | None = None
+        self._silence_path = Path(silence_path) if silence_path is not None else None
+        self._silenced_until = self._load_silence()
 
     # ------------------------------------------------------------------ API
 
@@ -79,14 +84,29 @@ class AlertManager:
 
     def silence_for(self, minutes: float, now: datetime) -> None:
         self._silenced_until = now + timedelta(minutes=minutes)
+        self._save_silence()
         logger.info("alertas silenciadas por %.0f minutos", minutes)
 
     def is_silenced(self, now: datetime) -> bool:
-        return self._silenced_until is not None and now < self._silenced_until
+        if self._silenced_until is None:
+            return False
+        if now < self._silenced_until:
+            return True
+        self._silenced_until = None
+        self._save_silence()
+        return False
+
+    @property
+    def silenced_until(self) -> datetime | None:
+        return self._silenced_until
 
     @property
     def active_keys(self) -> set[str]:
         return set(self._states)
+
+    @property
+    def active_alerts(self) -> dict[str, str]:
+        return {key: state.message for key, state in self._states.items()}
 
     # ------------------------------------------------------------------ interno
 
@@ -120,7 +140,7 @@ class AlertManager:
         state = self._states.pop(key, None)
         if state is None or not state.notified:
             return
-        if self.is_silenced(now):
+        if state.severity is not Severity.CRITICAL and self.is_silenced(now):
             logger.info("condición normalizada durante silencio: %s", state.message)
             return
         text = resolved_message or state.message
@@ -132,8 +152,41 @@ class AlertManager:
             return
         prefix = _PREFIX[state.severity]
         sent = self.notifier.send(f"{prefix}\n{state.message}")
-        state.notified = sent or not self.notifier.configured
+        state.notified = sent or not self.notifier.enabled
         state.last_sent = now if state.notified else None
+
+    def _load_silence(self) -> datetime | None:
+        if self._silence_path is None or not self._silence_path.exists():
+            return None
+        try:
+            raw = json.loads(self._silence_path.read_text(encoding="utf-8"))
+            value = raw.get("silenced_until")
+            if not value:
+                return None
+            parsed = datetime.fromisoformat(value)
+            return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+        except (OSError, ValueError, TypeError, AttributeError) as exc:
+            logger.warning("no se pudo leer el silencio de alertas: %s", exc)
+            return None
+
+    def _save_silence(self) -> None:
+        if self._silence_path is None:
+            return
+        try:
+            self._silence_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._silence_path.with_suffix(".tmp")
+            payload = {
+                "silenced_until": (
+                    self._silenced_until.isoformat()
+                    if self._silenced_until is not None
+                    else None
+                )
+            }
+            tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            os.replace(tmp, self._silence_path)
+        except OSError as exc:
+            # No poder persistir el silencio no debe impedir silenciar en vivo.
+            logger.warning("no se pudo guardar el silencio de alertas: %s", exc)
 
 
 def max_severity(current: Severity | None, new: Severity) -> Severity:

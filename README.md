@@ -4,10 +4,13 @@ Sistema de control y monitoreo para un cultivo hidropónico NFT. El núcleo
 (`hidro-core`) lee sensores, publica en InfluxDB, evalúa reglas de alarma y
 dosificación, y avisa por Telegram. Grafana muestra el estado del cultivo.
 
-Estado actual: **Fase 0** verificada en simulación. Las fases 1 a 6 tienen el
-software y las pruebas listos. Las fases 1 a 5 esperan la validación física; la
-fase 6 espera la fuente de 12 V, la calibración real de la bomba y una semana de
-operación en `dry_run` antes de habilitar dosis reales.
+Estado actual: **Fase 0** verificada en simulación. Las fases 1 a 7 tienen el
+software y las pruebas listos. Las fases 1 a 6 esperan la validación física y la
+fase 6 la fuente de 12 V, la calibración real de la bomba y una semana de
+operación en `dry_run` antes de habilitar dosis reales. La Fase 7 agrega el
+resumen diario, los comandos de Telegram, los respaldos y la operación
+documentada; su punto de control sigue pendiente hasta detener `hidro-core` y
+recibir la alerta real de Grafana.
 El detalle de lo hecho, lo verificado y los puntos de control está en
 [`PROGRESS.md`](PROGRESS.md). El diseño completo está en
 [`PLAN_IMPLEMENTACION.md`](PLAN_IMPLEMENTACION.md).
@@ -87,9 +90,39 @@ El modo mock no toca GPIO, I2C ni 1-Wire. Los sensores simulados publican cada
    docker compose -f compose.yaml -f compose.mock.yaml exec hidro-core hidro alert-test
    ```
 
-La alerta "hidro-core sin datos" de Grafana se dispara cuando no hay latidos en
-InfluxDB durante 10 minutos y también envía a Telegram. Los archivos generados
+La alerta "hidro-core sin datos" de Grafana se dispara tras unos 10 minutos sin
+latidos en InfluxDB (consulta de 5 min que debe seguir vacía otros 5 min, para
+no avisar por un error pasajero) y también envía a Telegram. Los archivos generados
 quedan en `data/grafana/alerting/`, que no se versiona.
+
+El núcleo también envía un **resumen diario** a la hora configurada en
+`alerts.daily_summary_at` (por defecto 09:00, hora de `TZ`). Resume lecturas
+actuales, mínimo/promedio/máximo de las últimas 24 h, dosis aplicadas, alertas
+activas, bloqueos y estado de dosificación. Si InfluxDB no responde, el resumen
+sale igualmente sin la sección histórica. Si el envío falla, se reintenta en el
+siguiente ciclo; el estado se guarda en `/data` para no duplicarlo tras un
+reinicio.
+
+### Comandos por Telegram
+
+Solo se aceptan mensajes del chat indicado en `TELEGRAM_CHAT_ID`; los mensajes
+de cualquier otro chat se ignoran y quedan en el log local.
+
+| Comando | Efecto |
+| --- | --- |
+| `/estado` | Lecturas actuales, alertas activas, silencio, bombas bloqueadas, calibración de pH y salidas encendidas |
+| `/silenciar [minutos]` | Silencia avisos no críticos durante N minutos (60 por defecto, máximo 1440) |
+| `/ayuda` | Muestra la ayuda |
+
+El silencio se guarda en `/data/silence.json` y sobrevive a un reinicio. Las
+alertas **críticas** (por ejemplo, flujo detenido) siguen llegando aunque el
+resto esté silenciado. Tampoco afecta a las alertas que envía Grafana, como
+"hidro-core sin datos": esas salen directamente de Grafana. El offset de lectura
+se guarda en
+`/data/telegram_offset.json`, así que un reinicio no repite comandos ya
+procesados. Los comandos enviados mientras el núcleo estaba detenido se
+responden al volver; un `/silenciar` con más de 10 minutos de retraso se ignora
+(con aviso) para no tapar las alertas de ese momento.
 
 ## Comandos del núcleo
 
@@ -139,7 +172,8 @@ Todo lo agronómico vive en `config/hidro.yaml`:
   `ph` y `ec`.
 - `ranges`, `monitoring`: umbrales de alarma y tiempos sostenidos.
 - `dosing`: dosis, intervalos, límites y modo `dry_run`.
-- `alerts`: Telegram, repetición de críticas y resumen diario.
+- `alerts`: Telegram, repetición de críticas y hora del resumen diario
+  (`daily_summary_at: "HH:MM"`).
 
 Variables de entorno principales (`.env`, nunca versionado):
 
@@ -162,13 +196,43 @@ Los overrides fijan el modo: `compose.mock.yaml` fuerza `mock` y
 ### Datos persistentes
 
 El volumen `hidro_data` (montado en `/data`) guarda `calibration.yaml`,
-`heartbeat.json`, contadores de flujo y el estado de seguridad. InfluxDB y
-Grafana usan sus propios volúmenes. Para respaldar:
+`heartbeat.json`, contadores de flujo, el estado de seguridad, el silencio de
+alertas, el offset de Telegram y el estado del resumen diario. InfluxDB y
+Grafana usan sus propios volúmenes.
+
+### Respaldos y restauración
+
+El respaldo incluye el volumen `/data` y un respaldo **completo** de InfluxDB
+(bucket `hidro`, organización, tokens y buckets internos): la restauración usa
+`influx restore --full`, que reemplaza la instancia entera. No detiene `hidro-core`; InfluxDB toma un respaldo en
+caliente.
 
 ```bash
-docker run --rm -v hidro_hidro_data:/data -v "$PWD/backup:/backup" alpine \
-  tar czf /backup/hidro_data.tgz -C /data .
+bash scripts/backup.sh
 ```
+
+Crea `backups/<fecha>/` con `hidro-data.tgz`, el directorio `influx/`, una copia
+de `config/hidro.yaml` y un `manifest.txt`. La carpeta `backups/` no se
+versiona. El `.env` no se incluye: guárdalo por separado y nunca en git.
+
+Para restaurar (reemplaza `/data` y todo InfluxDB, incluidos sus tokens, y
+detiene el núcleo y Grafana durante el proceso; el `INFLUX_TOKEN` del `.env`
+debe ser el del respaldo):
+
+```bash
+bash scripts/restore.sh backups/20261022T090000
+```
+
+Pide confirmación. En la Pi usa `compose.hardware.yaml` por defecto; en el PC:
+
+```bash
+RESTORE_COMPOSE=compose.mock.yaml bash scripts/restore.sh backups/...
+```
+
+Para automatizar una restauración ya revisada, `RESTORE_YES=1`. Si el volumen
+tiene otro nombre, defínelo con `HIDRO_DATA_VOLUME`. Después de restaurar,
+revisa `docker compose ps`, los logs y una lectura de sensores antes de confiar
+en el sistema.
 
 ## Desarrollo y pruebas
 
@@ -663,12 +727,86 @@ ni por los límites; úsala solo con la bomba calibrada y con confirmación.
 
 ## Operación
 
+### Rutina diaria
+
+1. Lee el resumen de las 09:00 o envía `/estado` al bot.
+2. Revisa pH, EC, temperatura del agua, flujo y nivel del estanque en Grafana.
+3. Si hay una alerta, corrige la causa antes de resetear un bloqueo.
+4. Confirma que el estanque tiene agua suficiente y que la bomba principal
+   sigue funcionando; el software no la controla.
+5. Revisa que `hidro-core` esté `healthy`:
+
+   ```bash
+   docker compose -f compose.yaml -f compose.hardware.yaml ps
+   ```
+
+### Rutina semanal y mensual
+
+- Semanal: revisa logs, espacio en disco, última dosis y que el respaldo más
+  reciente se pueda leer. Haz un respaldo después de cada cambio de
+  configuración o calibración:
+
+  ```bash
+  bash scripts/backup.sh
+  ```
+
+- Mensual: recalibra el pH y revisa el estado físico de las sondas. Si el EC
+  deriva o cambias la sonda, calibra también el EC con la solución patrón.
+- Guarda los respaldos fuera de la Pi. Un respaldo en el mismo disco no protege
+  de una falla del disco.
+
+### Cuidado de la sonda de pH
+
+- La sonda **no debe secarse**. En operación queda sumergida en la solución;
+  fuera de ella, guárdala con el capuchón lleno de solución de almacenamiento
+  (KCl 3 M) o, a falta de ella, buffer pH 4.
+- Enjuágala con agua destilada entre soluciones, pero **no la guardes en agua
+  destilada**: pierde electrolito y responde más lento.
+- No la frotes ni la limpies con alcohol; usa agua destilada y un paño suave.
+- La calibración vence a los 30 días. Una lectura `suspect` genera un aviso y
+  bloquea la dosificación hasta recalibrar o corregir la temperatura.
+
+### Recalibración mensual del pH
+
+Detén el núcleo, porque la calibración comparte el ADS1115 y el relé del TDS:
+
+```bash
+docker compose -f compose.yaml -f compose.hardware.yaml stop hidro-core
+docker compose -f compose.yaml -f compose.hardware.yaml run --rm --no-deps \
+  hidro-core calibrate ph --point 6.86
+docker compose -f compose.yaml -f compose.hardware.yaml run --rm --no-deps \
+  hidro-core calibrate ph --point 4.00
+docker compose -f compose.yaml -f compose.hardware.yaml up -d hidro-core
+```
+
+Enjuaga con agua destilada entre soluciones, espera a que la lectura se
+estabilice y usa la temperatura real de la solución. Al terminar, vuelve a
+dejar la sonda húmeda. Comprueba el resultado con `/estado` o `hidro read` y
+anota la fecha y la pendiente en `PROGRESS.md`.
+
+### Actualización y salud
+
 - Reinicio automático: `restart: unless-stopped` en los tres servicios.
 - Salud del núcleo: healthcheck por latido; `docker compose ps` muestra
   `healthy` o `unhealthy`.
-- Grafana avisa por Telegram si el núcleo deja de publicar durante 10 minutos.
+- Grafana avisa por Telegram si el núcleo deja de publicar durante unos 10
+  minutos.
 - Retención de InfluxDB: 365 días (por la RAM y el disco compartidos de la Pi).
-- Actualización: `git pull` (o `./deploy.sh` desde el PC) y `up -d --build`.
+- Actualización: `./deploy.sh` desde el PC o `git pull` y `up -d --build` en la
+  Pi, revisando después `/estado` y el dashboard.
+
+### Punto de control de la Fase 7
+
+La fase no se cierra hasta completar y registrar:
+
+1. Recibir el resumen diario a la hora configurada.
+2. Probar `/estado` y `/silenciar 10` desde el chat autorizado; confirmar que
+   las alertas críticas no quedan silenciadas.
+3. Detener `hidro-core` a propósito y recibir la alerta "hidro-core sin datos"
+   de Grafana en Telegram.
+4. Hacer un respaldo y una restauración de prueba, y confirmar que el sistema
+   vuelve a operar.
+5. Revisar esta guía y confirmar que se puede operar sin ayuda.
 
 ## Seguridad
 
@@ -686,6 +824,9 @@ ni por los límites; úsala solo con la bomba calibrada y con confirmación.
 | `No module named 'fcntl'` en Windows | `smbus2` no existe en Windows; usa modo mock |
 | Grafana reinicia y no arranca | Faltan las alertas generadas o el token; ejecuta `scripts/render_grafana_alerting.py` |
 | Grafana dice "sin datos" | El núcleo no publica: revisa `docker compose logs hidro-core` y el latido |
+| El bot no responde a `/estado` | Revisa `TELEGRAM_CHAT_ID`, el token, los logs y que el núcleo esté corriendo |
+| No llega el resumen diario | Comprueba `alerts.daily_summary_at`, `TZ` y el estado en `/data/daily_summary.json` |
+| Falla `scripts/backup.sh` | InfluxDB debe estar en marcha y `INFLUX_TOKEN` debe ser el token de operador (respaldo completo) |
 | La dosificación no actúa | `dosing.enabled`/`dry_run`, bloqueo de seguridad o falta calibrar `ml_per_min` |
 | Bomba bloqueada tras un fallo o un límite | Corrige la causa, revisa el cultivo y ejecuta `hidro safety reset [pump]` |
 | `Permission denied` en `/dev` | GIDs incorrectos en `.env` o falta `group_add` (usa `compose.hardware.yaml`) |
@@ -703,6 +844,7 @@ config/hidro.yaml         # hardware declarado, rangos y reglas
 config/grafana/           # provisioning de datasource, dashboard y alertas
 core/src/hidro/           # paquete: drivers, control, alertas, storage, CLI
 core/tests/               # pruebas sin hardware
-scripts/                  # render de alertas, diagnóstico y verificaciones por fase
+scripts/                  # respaldos, render de alertas y verificaciones por fase
 deploy.sh                 # PC → Pi por SSH
+backups/                  # respaldos locales, ignorados por git
 ```

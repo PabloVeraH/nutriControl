@@ -261,6 +261,21 @@ class AlertsConfig(StrictModel):
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     daily_summary_at: str = "09:00"
 
+    @field_validator("daily_summary_at")
+    @classmethod
+    def _valid_summary_time(cls, value: str) -> str:
+        raw = value.strip()
+        parts = raw.split(":")
+        if len(parts) != 2:
+            raise ValueError("daily_summary_at debe tener el formato HH:MM")
+        try:
+            hour, minute = int(parts[0]), int(parts[1])
+        except ValueError as exc:
+            raise ValueError("daily_summary_at debe tener el formato HH:MM") from exc
+        if not 0 <= hour <= 23 or not 0 <= minute <= 59:
+            raise ValueError("daily_summary_at debe ser una hora entre 00:00 y 23:59")
+        return f"{hour:02d}:{minute:02d}"
+
 
 # --------------------------------------------------------------------------- raíz
 
