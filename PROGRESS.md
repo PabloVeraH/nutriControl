@@ -689,3 +689,11 @@ humano y la validación con Telegram y hardware reales.
 No se marca la fase como cerrada hasta completar los pasos anteriores y
 registrar la fecha, el resultado de la alerta real y el resultado de la
 restauración. La dosificación debe permanecer en `dry_run: true`.
+
+### Publicación
+
+- Rama `fase-7`, commit `4a0ef25` (`feat(fase-7): agregar resumen diario,
+  comandos y respaldos`), publicada en `origin/fase-7`.
+- El punto de control humano sigue pendiente: detener `hidro-core`, recibir la
+  alerta real de Grafana, probar los comandos y completar la restauración en la
+  Pi. La fase no se cierra hasta registrar esas pruebas.
