@@ -93,8 +93,13 @@ class Controller:
                 self.app.storage.write_heartbeat(now, cycle, config.mode)
                 write_heartbeat(self.app.settings.data_dir, now, cycle)
                 self._commands.poll(now)
-                if self._summary.is_due(now):
-                    self._summary.maybe_send(now, self._daily_summary_text(now))
+                try:
+                    if self._summary.is_due(now):
+                        self._summary.maybe_send(now, self._daily_summary_text(now))
+                except Exception:
+                    # Un fallo al armar el resumen no debe tumbar el ciclo: a las
+                    # 09:00 Docker lo reiniciaría una y otra vez.
+                    logger.exception("no se pudo preparar el resumen diario")
                 cycle += 1
 
                 elapsed = self._clock() - started

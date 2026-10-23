@@ -201,7 +201,9 @@ def test_daily_summary_retries_after_send_failure(tmp_path: Path) -> None:
     now = datetime(2026, 1, 1, 9, 0, tzinfo=UTC)
 
     assert not summary.maybe_send(now, "resumen")
-    assert summary.maybe_send(now + timedelta(minutes=1), "resumen")
+    # Espera antes de reintentar: no repetir la consulta de 24 h en cada ciclo.
+    assert not summary.is_due(now + timedelta(minutes=1))
+    assert summary.maybe_send(now + timedelta(minutes=5), "resumen")
     assert notifier.messages == ["resumen"]
 
 

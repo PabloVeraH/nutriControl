@@ -137,3 +137,32 @@ def test_status_critical_alerts_survive_silence() -> None:
         now=NOW,
     )
     assert any("CRÍTICO" in message for message in notifier.messages)
+
+
+def test_late_silence_command_is_ignored(tmp_path: Path) -> None:
+    commands, manager = handler()
+    sent = NOW - timedelta(hours=3)
+    notifier = UpdateNotifier(
+        [
+            {
+                "update_id": 20,
+                "message": {
+                    "chat": {"id": 42},
+                    "text": "/silenciar 1440",
+                    "date": int(sent.timestamp()),
+                },
+            }
+        ]
+    )
+    bot = TelegramCommandBot(notifier, commands, offset_path=tmp_path / "offset.json")
+
+    bot.poll(NOW)
+
+    assert not manager.is_silenced(NOW)
+    assert "Ignoré" in notifier.messages[0]
+
+
+def test_recent_silence_command_applies() -> None:
+    commands, manager = handler()
+    commands.handle(42, "/silenciar 30", NOW, sent_at=NOW - timedelta(minutes=1))
+    assert manager.is_silenced(NOW)

@@ -90,8 +90,9 @@ El modo mock no toca GPIO, I2C ni 1-Wire. Los sensores simulados publican cada
    docker compose -f compose.yaml -f compose.mock.yaml exec hidro-core hidro alert-test
    ```
 
-La alerta "hidro-core sin datos" de Grafana se dispara cuando no hay latidos en
-InfluxDB durante 10 minutos y también envía a Telegram. Los archivos generados
+La alerta "hidro-core sin datos" de Grafana se dispara tras unos 10 minutos sin
+latidos en InfluxDB (consulta de 5 min que debe seguir vacía otros 5 min, para
+no avisar por un error pasajero) y también envía a Telegram. Los archivos generados
 quedan en `data/grafana/alerting/`, que no se versiona.
 
 El núcleo también envía un **resumen diario** a la hora configurada en
@@ -119,7 +120,9 @@ resto esté silenciado. Tampoco afecta a las alertas que envía Grafana, como
 "hidro-core sin datos": esas salen directamente de Grafana. El offset de lectura
 se guarda en
 `/data/telegram_offset.json`, así que un reinicio no repite comandos ya
-procesados.
+procesados. Los comandos enviados mientras el núcleo estaba detenido se
+responden al volver; un `/silenciar` con más de 10 minutos de retraso se ignora
+(con aviso) para no tapar las alertas de ese momento.
 
 ## Comandos del núcleo
 
@@ -199,8 +202,10 @@ Grafana usan sus propios volúmenes.
 
 ### Respaldos y restauración
 
-El respaldo incluye el volumen `/data` y el bucket completo de InfluxDB. No
-detiene `hidro-core`; InfluxDB toma un respaldo en caliente.
+El respaldo incluye el volumen `/data` y un respaldo **completo** de InfluxDB
+(bucket `hidro`, organización, tokens y buckets internos): la restauración usa
+`influx restore --full`, que reemplaza la instancia entera. No detiene `hidro-core`; InfluxDB toma un respaldo en
+caliente.
 
 ```bash
 bash scripts/backup.sh
@@ -210,8 +215,9 @@ Crea `backups/<fecha>/` con `hidro-data.tgz`, el directorio `influx/`, una copia
 de `config/hidro.yaml` y un `manifest.txt`. La carpeta `backups/` no se
 versiona. El `.env` no se incluye: guárdalo por separado y nunca en git.
 
-Para restaurar (reemplaza `/data` y el bucket, detiene el núcleo y Grafana
-durante el proceso):
+Para restaurar (reemplaza `/data` y todo InfluxDB, incluidos sus tokens, y
+detiene el núcleo y Grafana durante el proceso; el `INFLUX_TOKEN` del `.env`
+debe ser el del respaldo):
 
 ```bash
 bash scripts/restore.sh backups/20261022T090000
@@ -751,10 +757,12 @@ ni por los límites; úsala solo con la bomba calibrada y con confirmación.
 
 ### Cuidado de la sonda de pH
 
-- La sonda **no debe secarse**. Después de medir o calibrar, enjuágala con agua
-  destilada y déjala en agua o en solución de almacenamiento (KCl).
+- La sonda **no debe secarse**. En operación queda sumergida en la solución;
+  fuera de ella, guárdala con el capuchón lleno de solución de almacenamiento
+  (KCl 3 M) o, a falta de ella, buffer pH 4.
+- Enjuágala con agua destilada entre soluciones, pero **no la guardes en agua
+  destilada**: pierde electrolito y responde más lento.
 - No la frotes ni la limpies con alcohol; usa agua destilada y un paño suave.
-- No la dejes mucho tiempo en agua destilada: pierde electrolito.
 - La calibración vence a los 30 días. Una lectura `suspect` genera un aviso y
   bloquea la dosificación hasta recalibrar o corregir la temperatura.
 
@@ -781,7 +789,8 @@ anota la fecha y la pendiente en `PROGRESS.md`.
 - Reinicio automático: `restart: unless-stopped` en los tres servicios.
 - Salud del núcleo: healthcheck por latido; `docker compose ps` muestra
   `healthy` o `unhealthy`.
-- Grafana avisa por Telegram si el núcleo deja de publicar durante 10 minutos.
+- Grafana avisa por Telegram si el núcleo deja de publicar durante unos 10
+  minutos.
 - Retención de InfluxDB: 365 días (por la RAM y el disco compartidos de la Pi).
 - Actualización: `./deploy.sh` desde el PC o `git pull` y `up -d --build` en la
   Pi, revisando después `/estado` y el dashboard.
@@ -817,7 +826,7 @@ La fase no se cierra hasta completar y registrar:
 | Grafana dice "sin datos" | El núcleo no publica: revisa `docker compose logs hidro-core` y el latido |
 | El bot no responde a `/estado` | Revisa `TELEGRAM_CHAT_ID`, el token, los logs y que el núcleo esté corriendo |
 | No llega el resumen diario | Comprueba `alerts.daily_summary_at`, `TZ` y el estado en `/data/daily_summary.json` |
-| Falla `scripts/backup.sh` | InfluxDB debe estar en marcha y `INFLUX_TOKEN`/`INFLUX_ORG` deben ser correctos |
+| Falla `scripts/backup.sh` | InfluxDB debe estar en marcha y `INFLUX_TOKEN` debe ser el token de operador (respaldo completo) |
 | La dosificación no actúa | `dosing.enabled`/`dry_run`, bloqueo de seguridad o falta calibrar `ml_per_min` |
 | Bomba bloqueada tras un fallo o un límite | Corrige la causa, revisa el cultivo y ejecuta `hidro safety reset [pump]` |
 | `Permission denied` en `/dev` | GIDs incorrectos en `.env` o falta `group_add` (usa `compose.hardware.yaml`) |

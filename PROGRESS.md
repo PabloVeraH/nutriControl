@@ -690,6 +690,33 @@ No se marca la fase como cerrada hasta completar los pasos anteriores y
 registrar la fecha, el resultado de la alerta real y el resultado de la
 restauración. La dosificación debe permanecer en `dry_run: true`.
 
+### Revisión
+
+Rama `revision-fase-7` (desde `fase-7`). Hallazgos corregidos:
+
+- **Resumen diario podía tumbar el núcleo:** una excepción al armarlo (fuera
+  de la consulta a InfluxDB, que sí estaba protegida) salía del ciclo; Docker
+  reiniciaba y, como el resumen seguía pendiente, volvía a fallar en bucle a
+  la hora del resumen. Ahora se registra y el ciclo sigue.
+- **Reintento del resumen cada 30 s:** sin Internet repetía en cada ciclo la
+  consulta de 24 h a InfluxDB en la Pi. Ahora reintenta cada 5 min.
+- **`/silenciar` atrasado:** un comando enviado con el núcleo detenido (justo
+  la prueba del punto de control) se aplicaba al reiniciar y podía tapar las
+  alertas de ese momento. Con más de 10 min de retraso se ignora y se avisa;
+  `/estado` atrasado sí se responde.
+- **Alerta de Grafana:** con `for: 0m` y `execErrState: Alerting`, un solo
+  error de evaluación (InfluxDB reiniciando en un `up -d --build`) disparaba
+  "sin datos". Ahora consulta 5 min y exige 5 min más (`for: 5m`): sigue
+  siendo ~10 min sin latidos.
+- **Respaldo de InfluxDB:** `backup.sh` filtraba por bucket y org mientras
+  `restore.sh` usa `--full`, que reemplaza toda la instancia; funcionaba (la
+  prueba lo confirmó), pero cualquier otro bucket perdía sus datos. Ahora el
+  respaldo es completo y limpia `/tmp/hidro-backup` antes de empezar.
+- README: cuidado de la sonda sin contradicción (guardar en KCl 3 M o buffer
+  pH 4, nunca en agua destilada), tiempos de la alerta y alcance del respaldo.
+- Pruebas nuevas verificadas contra el código original. `pytest`: 357
+  pruebas, cobertura 90,73 %; `ruff` y `mypy` sin hallazgos.
+
 ### Publicación
 
 - Rama `fase-7`, commit `4a0ef25` (`feat(fase-7): agregar resumen diario,

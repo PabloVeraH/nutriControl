@@ -6,7 +6,7 @@ import json
 import math
 import os
 from collections.abc import Callable, Iterable
-from datetime import datetime, timedelta, tzinfo
+from datetime import UTC, datetime, timedelta, tzinfo
 from pathlib import Path
 
 from hidro.alerts.manager import AlertManager
@@ -17,6 +17,9 @@ logger = get_logger("alerts.commands")
 
 DEFAULT_SILENCE_MIN = 60.0
 MAX_SILENCE_MIN = 1440.0
+# Un /silenciar enviado con el núcleo detenido llega al reiniciar: pasado este
+# tiempo ya no refleja la intención del usuario y podría tapar alertas nuevas.
+MAX_SILENCE_COMMAND_AGE = timedelta(minutes=10)
 
 HELP_TEXT = (
     "Comandos disponibles:\n"
@@ -44,7 +47,13 @@ class TelegramCommandHandler:
         self.allowed_chat_ids = {str(chat_id) for chat_id in allowed_chat_ids}
         self.timezone = timezone
 
-    def handle(self, chat_id: object, text: str, now: datetime) -> str | None:
+    def handle(
+        self,
+        chat_id: object,
+        text: str,
+        now: datetime,
+        sent_at: datetime | None = None,
+    ) -> str | None:
         if str(chat_id) not in self.allowed_chat_ids:
             logger.warning("comando de Telegram ignorado: chat no autorizado")
             return None
@@ -64,6 +73,12 @@ class TelegramCommandHandler:
                 return "⚠️ No se pudo leer el estado del núcleo; revisa los logs."
 
         if command == "/silenciar":
+            if sent_at is not None and now - sent_at > MAX_SILENCE_COMMAND_AGE:
+                minutes = (now - sent_at).total_seconds() / 60
+                return (
+                    f"⏱️ Ignoré «{text.strip()}»: llegó con {minutes:.0f} min de retraso "
+                    "(el núcleo estaba detenido). Repítelo si aún quieres silenciar."
+                )
             return self._silence(parts[1:], now)
         return HELP_TEXT
 
@@ -126,7 +141,10 @@ class TelegramCommandBot:
             chat_id = chat.get("id")
             if chat_id is None:
                 continue
-            reply = self.handler.handle(chat_id, text, now)
+            sent_at = None
+            if isinstance(message.get("date"), int):
+                sent_at = datetime.fromtimestamp(message["date"], UTC)
+            reply = self.handler.handle(chat_id, text, now, sent_at)
             if reply:
                 self.notifier.send(reply)
             handled += 1

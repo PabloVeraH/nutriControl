@@ -12,7 +12,7 @@ groups:
         data:
           - refId: A
             relativeTimeRange:
-              from: 600
+              from: 300
               to: 0
             datasourceUid: hidro-influx
             model:
@@ -20,13 +20,13 @@ groups:
               rawQuery: true
               query: |
                 from(bucket: "hidro")
-                  |> range(start: -10m)
+                  |> range(start: -5m)
                   |> filter(fn: (r) => r._measurement == "heartbeat")
                   |> filter(fn: (r) => r._field == "value")
                   |> last()
           - refId: B
             relativeTimeRange:
-              from: 600
+              from: 300
               to: 0
             datasourceUid: __expr__
             model:
@@ -38,7 +38,7 @@ groups:
                 mode: ""
           - refId: C
             relativeTimeRange:
-              from: 600
+              from: 300
               to: 0
             datasourceUid: __expr__
             model:
@@ -50,8 +50,9 @@ groups:
                     type: lt
                     params:
                       - 1
-        # La consulta ya cubre 10 minutos sin latidos: no se suma otra espera.
-        for: 0m
+        # 5 min de consulta + 5 min de "for" = aviso tras ~10 min sin latidos; el
+        # "for" evita que un error pasajero (InfluxDB reiniciando) dispare la alerta.
+        for: 5m
         noDataState: Alerting
         execErrState: Alerting
         labels:

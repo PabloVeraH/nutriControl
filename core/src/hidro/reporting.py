@@ -22,6 +22,10 @@ from hidro.storage.influx import DailyStats, VariableStats
 
 logger = get_logger("reporting")
 
+# Sin Internet, reintentar en cada ciclo repetiría cada 30 s la consulta de 24 h
+# a InfluxDB en la Pi; basta con reintentar cada pocos minutos.
+SUMMARY_RETRY = timedelta(minutes=5)
+
 
 def parse_daily_time(value: str) -> time:
     """Convierte HH:MM en ``time``; la configuración ya valida el formato."""
@@ -45,8 +49,11 @@ class DailySummary:
         self.timezone = timezone
         self.state_path = Path(state_path)
         self._last_sent: date | None = self._load()
+        self._retry_at: datetime | None = None
 
     def is_due(self, now: datetime) -> bool:
+        if self._retry_at is not None and now < self._retry_at:
+            return False
         local = now.astimezone(self.timezone)
         if self._last_sent is not None and local.date() <= self._last_sent:
             return False
@@ -60,7 +67,8 @@ class DailySummary:
         if not self.notifier.enabled:
             logger.info("resumen diario sin Telegram habilitado/configurado:\n%s", text)
         elif not self.notifier.send(text):
-            logger.error("no se pudo enviar el resumen diario; se reintenta")
+            logger.error("no se pudo enviar el resumen diario; se reintenta en 5 min")
+            self._retry_at = now + SUMMARY_RETRY
             return False
 
         self._last_sent = local.date()

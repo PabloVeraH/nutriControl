@@ -19,9 +19,11 @@ def test_no_data_rule_fires_after_ten_minutes() -> None:
     assert rule["uid"] == "hidro-sin-datos"
     assert rule["noDataState"] == "Alerting"
     assert rule["execErrState"] == "Alerting"
-    assert rule["for"] == "0m"
-    assert all(item["relativeTimeRange"]["from"] == 600 for item in rule["data"])
-    assert 'range(start: -10m)' in rule["data"][0]["model"]["query"]
+    # 5 min de consulta + 5 min de "for": ~10 min sin latidos, sin disparar
+    # por un error pasajero de una sola evaluación.
+    assert rule["for"] == "5m"
+    assert all(item["relativeTimeRange"]["from"] == 300 for item in rule["data"])
+    assert 'range(start: -5m)' in rule["data"][0]["model"]["query"]
 
 
 def test_renderer_quotes_telegram_chat_id(tmp_path: Path) -> None:

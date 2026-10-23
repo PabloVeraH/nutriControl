@@ -68,11 +68,13 @@ docker run --rm \
   sh -c "tar czf /backup/hidro-data.tgz -C /data . && chown $(id -u):$(id -g) /backup/hidro-data.tgz"
 
 INFLUX_ID="$(docker compose -f compose.yaml ps -q influxdb)"
-echo "Respaldando el bucket $INFLUX_BUCKET desde InfluxDB"
+echo "Respaldando InfluxDB completo (incluye el bucket $INFLUX_BUCKET)"
+# Respaldo completo, sin --bucket ni --org: restore.sh usa `influx restore --full`,
+# que reemplaza toda la instancia; con un respaldo filtrado, los datos de
+# cualquier otro bucket se perderían al restaurar.
+docker compose -f compose.yaml exec -T influxdb rm -rf /tmp/hidro-backup
 docker compose -f compose.yaml exec -T influxdb \
   influx backup /tmp/hidro-backup \
-  --bucket "$INFLUX_BUCKET" \
-  --org "$INFLUX_ORG" \
   --token "$INFLUX_TOKEN"
 docker cp "$INFLUX_ID:/tmp/hidro-backup" "$HOST_DEST/influx"
 docker compose -f compose.yaml exec -T influxdb rm -rf /tmp/hidro-backup

@@ -74,6 +74,26 @@ def test_controller_polls_commands_and_sends_daily_summary(tmp_path: Path) -> No
     assert any("RESUMEN DIARIO" in message for message in notifier.messages)
 
 
+def test_daily_summary_failure_does_not_stop_the_cycle(tmp_path: Path) -> None:
+    app = build_app(
+        settings_for(tmp_path),
+        make_config(alerts={"daily_summary_at": "09:00"}),
+    )
+    wall_time = datetime(2026, 1, 1, 9, 0, tzinfo=UTC)
+    controller = Controller(app, clock=FakeClock(), wall_clock=lambda: wall_time)
+    controller._install_signal_handlers = lambda: None  # type: ignore[method-assign]
+
+    def explode(_now: datetime) -> str:
+        raise RuntimeError("influx raro")
+
+    controller._daily_summary_text = explode  # type: ignore[method-assign]
+    controller._sleep = lambda _seconds: controller.stop()
+
+    controller.run_forever()
+
+    assert read_heartbeat(app.settings.data_dir) is not None
+
+
 def test_shutdown_turns_off_all_outputs(tmp_path: Path) -> None:
     app = build_app(settings_for(tmp_path), make_config())
     for output in app.outputs.values():
