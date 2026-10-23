@@ -67,9 +67,11 @@ def build_outputs(config: AppConfig, ctx: RuntimeContext) -> dict[str, Switch]:
                 )
             outputs[cfg.id] = device
         elif isinstance(cfg, PeristalticConfig):
-            ml_per_min = cfg.ml_per_min
+            # La calibración medida manda; el valor del YAML queda como
+            # referencia inicial mientras todavía no se haya calibrado.
+            ml_per_min = ctx.calibration.pump_ml_per_min(cfg.id)
             if ml_per_min is None:
-                ml_per_min = ctx.calibration.pump_ml_per_min(cfg.id)
+                ml_per_min = cfg.ml_per_min
             if ctx.mode == "mock":
                 pump: Switch = build_mock_pump(
                     cfg.id,

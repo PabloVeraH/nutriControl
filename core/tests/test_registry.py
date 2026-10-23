@@ -100,6 +100,17 @@ def test_pump_calibration_is_used_when_config_has_no_value(tmp_path: Path) -> No
     assert outputs["pump_ph_down"].ml_per_min == pytest.approx(8.5)
 
 
+def test_pump_calibration_overrides_config_value(tmp_path: Path) -> None:
+    raw = copy.deepcopy(base_config_dict())
+    raw["outputs"][1]["ml_per_min"] = 12.0
+    config = AppConfig.model_validate(raw)
+    ctx = context(tmp_path)
+    ctx.calibration.save_pump("pump_ph_down", 8.5)
+
+    outputs = build_outputs(config, ctx)
+    assert outputs["pump_ph_down"].ml_per_min == pytest.approx(8.5)
+
+
 def test_flow_calibration_overrides_config(tmp_path: Path) -> None:
     config = full_config()
     ctx = context(tmp_path)

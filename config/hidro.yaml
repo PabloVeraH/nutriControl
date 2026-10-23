@@ -78,6 +78,7 @@ outputs:
 
   - id: pump_ph_down
     type: peristaltic
+    role: ph_down
     gpio: 22
     ml_per_min: null
     max_on_s: 30
@@ -108,7 +109,10 @@ monitoring:
   ec_low_sustained_s: 1800
 
 dosing:
-  enabled: false
+  # Fase 6: las reglas se evalúan y se avisan, pero las bombas no se mueven.
+  # No cambiar dry_run a false sin el punto de control humano y la aprobación
+  # explícita del usuario.
+  enabled: true
   dry_run: true
   check_interval_s: 300
   mix_wait_s: 600

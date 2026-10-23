@@ -304,8 +304,8 @@ class CalibrationStore:
         return entry
 
     def save_pump(self, pump_id: str, ml_per_min: float) -> PumpCalibration:
-        if ml_per_min <= 0:
-            raise ValueError("ml/min debe ser positivo")
+        if not math.isfinite(ml_per_min) or ml_per_min <= 0:
+            raise ValueError("ml/min debe ser finito y positivo")
         entry = PumpCalibration(ml_per_min=ml_per_min, calibrated_at=datetime.now(UTC))
         data = self._load(strict=True)
         data.pumps[pump_id] = _PumpEntry(

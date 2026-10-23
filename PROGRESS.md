@@ -13,7 +13,7 @@ siguiente fase sin cerrar el punto de control humano correspondiente.
 | 3 — Flujómetro | En curso; driver y calibración listos, validación física pendiente | `fase-3` |
 | 4 — Aire (HTU21D) | En curso; driver, cálculos y verificación listos, validación física pendiente | `fase-4` |
 | 5 — pH y TDS (ADS1115) | En curso; drivers, CLI y verificación listos, validación física pendiente | `fase-5` |
-| 6 — Bomba y dosificación | Pendiente | — |
+| 6 — Bomba y dosificación | En curso; software, calibración y pruebas listos, validación física y `dry_run` pendientes | `fase-6` |
 | 7 — Operación | Pendiente | — |
 
 ## Fase 0 — Esqueleto en el PC
@@ -506,7 +506,119 @@ Sin cambios:
 
 ## Fase 6 — Bomba y dosificación
 
-Pendiente de hardware (fuente de 12 V).
+**Estado:** en curso. Driver, calibración, reglas, límites, pruebas y
+documentación listos; faltan la fuente de 12 V, la calibración real y la semana
+en `dry_run` antes de habilitar dosis reales.
+**Rama:** `fase-6` (desde `main`) · **Fecha:** 2026-10-22
+
+### Hecho
+
+- Driver `PeristalticPump` con dosis por volumen, `max_on_s`, evento de parada
+  compartido con SIGTERM y apagado del relé en `finally`. El registro aplica la
+  calibración guardada y, si existe, manda sobre `ml_per_min` del YAML.
+- `CalibrationStore.save_pump()` valida un caudal finito y positivo y lo
+  persiste en `/data/calibration.yaml`.
+- CLI `hidro calibrate pump [--id ID] [--seconds 60] [--ml N] [--yes]`: exige
+  modo hardware, avisa que hay que detener el núcleo, pide confirmación, enciende
+  la bomba como máximo 120 s, la apaga siempre, pide el volumen medido, calcula
+  `ml/min`, avisa si se aleja de la referencia y guarda.
+- Reglas 7.2: pH peligroso primero, EC bajo con nutrientes A/B, EC alto con
+  aviso de dilución y pH fuera de rango. Se evalúan en `dry_run`, se registran
+  en log/Influx y se avisan por Telegram sin mover bombas.
+- Reglas 7.3: límite por hora y por día con bloqueo persistente de la bomba
+  afectada. Al alcanzar un límite pide revisión humana y `hidro safety reset`;
+  un fallo de dosificación también bloquea. Reiniciar una bomba no borra los
+  límites ni los registros de las otras.
+- Sensores y bombas configurables: las reglas toman el primer `ph_analog` y
+  `tds_analog`, y cada bomba puede declarar `role` (`ph_down`, `ph_up`,
+  `nutrient_a`, `nutrient_b`). Los ids convencionales siguen funcionando como
+  respaldo.
+- CLI `hidro safety reset [pump]` y alias compatible `hidro safety-reset`.
+- Validación de `--ml` finito y positivo en `hidro pump`; configuración rechaza
+  roles de bomba duplicados y límites diarios no positivos.
+- Configuración de ejemplo con `dosing.enabled: true`, `dry_run: true`,
+  `role: ph_down` y límites de 3 dosis/h y 20 ml/día.
+- README con el circuito de 12 V, el diodo de recirculación, la calibración, el
+  uso de `dry_run`, el reset de seguridad y el punto de control humano.
+- Pruebas nuevas de calibración de bomba, apagado ante interrupción, roles e ids
+  personalizados, persistencia de límites, reset por bomba y bloqueo tras un
+  fallo. `pytest`: 303 pruebas, cobertura 90,69 %; `ruff` y `mypy` sin
+  hallazgos.
+
+### Bloqueos
+
+- No hay fuente de 12 V, bomba peristáltica ni cableado de potencia terminado.
+- Persisten el acceso SSH sin clave y la falta de hardware de las fases 1 a 5.
+- Telegram sigue sin configurar; no se pueden validar los avisos reales.
+- No se ha medido el caudal real ni se ha completado la semana en `dry_run`.
+- No hay aprobación explícita para poner `dry_run: false`.
+
+### Tareas
+
+- [x] Driver de bomba peristáltica y apagado seguro.
+- [x] Calibración persistente de `ml/min` y CLI guiada.
+- [x] Reglas de dosificación 7.2 en `dry_run`.
+- [x] Límites 7.3 persistentes y reset manual.
+- [x] Ids de sensores y roles de bombas configurables.
+- [x] Pruebas, validación y documentación.
+- [ ] Montar fuente de 12 V, fusible, diodo y relé; verificar que no llegan
+      12 V a la Pi.
+- [ ] Cebar la bomba y calibrar 60 s con agua; repetir y comparar.
+- [ ] Revisar una semana de decisiones en `dry_run` por Telegram y el log.
+- [ ] Verificar apagado con SIGTERM, Ctrl+C y corte del núcleo.
+- [ ] Probar un límite y el reset seguro.
+- [ ] Obtener aprobación explícita y hacer la primera dosis real pequeña.
+
+### Punto de control humano
+
+1. La bomba responde desde GPIO22 y el relé queda apagado al terminar o si se
+   interrumpe el comando.
+2. La calibración de 60 s produce un `ml/min` coherente y estable.
+3. La semana en `dry_run` muestra decisiones razonables y avisos claros, sin
+   activar la bomba.
+4. Los límites bloquean la bomba y solo `hidro safety reset` la habilita de
+   nuevo.
+5. El usuario aprueba explícitamente el cambio a `dry_run: false`.
+
+Los comandos concretos están en el README, sección "Fase 6: bomba peristáltica
+y dosificación".
+
+### Revisión
+
+Rama `revision-fase-6` (desde `fase-6`). Hallazgos corregidos:
+
+- **Crítico — corrección de pH invertida** (heredado de la Fase 0): con pH
+  bajo se programaba `pump_ph_down` (más ácido) y con pH alto `pump_ph_up`; los
+  tests lo fijaban. Ahora pH bajo → `ph_up` con `ph_up_ml` y pH alto →
+  `ph_down` con `ph_down_ml`. Con la única bomba `ph_down`, un pH bajo solo
+  avisa. Si `ph_danger` llega sin lectura fuera de rango, no se dosifica.
+- **`hidro safety reset` no surtía efecto con el núcleo vivo:** el núcleo
+  guardaba los bloqueos en memoria y los reescribía en el siguiente guardado.
+  `SafetyGuard` relee `safety.json` en cada operación; un archivo dañado ya no
+  borra los bloqueos. README: el reset se hace con `exec`.
+- **`dry_run` generaba bloqueos reales:** como el pH simulado no cambia, el
+  límite de 3 dosis/h se alcanzaba en ~30 min y dejaba la bomba bloqueada para
+  cuando se pasara a dosis reales. Ahora en `dry_run` se avisa "se bloquearía"
+  sin bloquear, y dosis simuladas y reales se cuentan por separado.
+- **Nutrientes desbalanceados:** si B estaba bloqueada o sin calibrar, A se
+  dosificaba sola. Ahora van juntas o ninguna.
+- **Rol contradictorio:** `pump_ph_up` con `role: ph_down` hacía que la regla
+  de subir pH usara el ácido por el id de respaldo; la configuración lo rechaza.
+- **Driver:** `dispense_ml(nan)` dejaba la bomba encendida en un bucle sin fin
+  (`nan <= 0` es falso); ahora exige volumen finito. Una parada a mitad de dosis
+  devuelve el tiempo real encendida en vez del pedido.
+- **`calibrate pump`:** un error de tipeo en el volumen abortaba después de
+  bombear; ahora vuelve a preguntar.
+- Pruebas nuevas verificadas contra el código original (fallan o se cuelgan,
+  caso NaN). `pytest`: 319 pruebas, cobertura 90,85 %; `ruff` y `mypy` sin
+  hallazgos.
+
+### Publicación
+
+- Rama `fase-6`, commit `fae9c3c` (`feat(fase-6): calibrar bombas y persistir
+  bloqueos de dosificación`), publicada en `origin/fase-6`.
+- La calibración física, la semana en `dry_run` y el punto de control siguen
+  pendientes de hardware y de la aprobación explícita del usuario.
 
 ## Fase 7 — Operación
 

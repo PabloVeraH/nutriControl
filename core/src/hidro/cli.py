@@ -26,6 +26,7 @@ from hidro.config import (
     ConfigError,
     DS18B20Config,
     FlowHallConfig,
+    PeristalticConfig,
     PHAnalogConfig,
     RelayConfig,
     TDSAnalogConfig,
@@ -300,6 +301,120 @@ def cmd_calibrate_flow(args: argparse.Namespace) -> int:
         print(f"calibración guardada: {pulses_per_liter:.0f} pulsos/L")
         if previous is not None:
             print(f"  valor anterior: {previous.pulses_per_liter:.0f} pulsos/L")
+        print("Reinicia hidro-core para aplicar la nueva calibración.")
+        return 0
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    except (EOFError, KeyboardInterrupt):
+        print("\ncalibración cancelada", file=sys.stderr)
+        return 130
+    finally:
+        runtime.close()
+
+
+MAX_PUMP_CALIBRATION_S = 120.0
+
+
+def cmd_calibrate_pump(args: argparse.Namespace) -> int:
+    from hidro.drivers.runtime import RuntimeContext
+
+    settings = _settings(verbose=True)
+    config = load_config(settings.config_path, settings.mode_override)
+    if not _require_hardware(config, "la calibración de bomba"):
+        return 2
+
+    seconds = float(args.seconds)
+    if not math.isfinite(seconds) or not 0.0 < seconds <= MAX_PUMP_CALIBRATION_S:
+        print(
+            f"--seconds debe ser mayor que 0 y como máximo {MAX_PUMP_CALIBRATION_S:g} s",
+            file=sys.stderr,
+        )
+        return 2
+
+    measured_ml: float | None = None
+    if args.ml is not None:
+        measured_ml = float(args.ml)
+        if not math.isfinite(measured_ml) or measured_ml <= 0:
+            print("--ml debe ser finito y positivo", file=sys.stderr)
+            return 2
+
+    pumps = [output for output in config.outputs if isinstance(output, PeristalticConfig)]
+    if args.id is not None:
+        pumps = [pump for pump in pumps if pump.id == args.id]
+    elif len(pumps) > 1:
+        ids = ", ".join(pump.id for pump in pumps)
+        print(f"hay varias bombas ({ids}); indica una con --id", file=sys.stderr)
+        return 2
+    if not pumps:
+        print("no se encontró la bomba en la configuración", file=sys.stderr)
+        return 2
+    pump = pumps[0]
+
+    print(f"Calibración de bomba: {pump.id} (GPIO{pump.gpio})")
+    print("Deja la entrada de la manguera en agua limpia y la salida en un recipiente graduado.")
+    print("La bomba debe estar cebada y sin aire antes de empezar.")
+    print(f"Se encenderá durante {seconds:g} s; apágala de inmediato si no circula agua.")
+    _print_core_stop_hint()
+    if not args.yes:
+        try:
+            if not _confirm(f"¿Encender {pump.id} durante {seconds:g} s?"):
+                print("calibración cancelada")
+                return 1
+        except (EOFError, KeyboardInterrupt):
+            print("\ncalibración cancelada", file=sys.stderr)
+            return 130
+
+    store = CalibrationStore(settings.data_dir / "calibration.yaml")
+    runtime = RuntimeContext(config.mode, settings.data_dir, store, LatestReadings())
+    try:
+        relay = RelayOutput(
+            f"{pump.id}_relay",
+            runtime.gpio_output(pump.gpio, active_high=True, initial=False),
+        )
+        try:
+            relay.on()
+            print(f"{pump.id}: encendida; esperando {seconds:g} s (Ctrl+C para cortar)...")
+            time.sleep(seconds)
+        finally:
+            relay.off()
+        print(f"{pump.id}: apagada")
+
+        # La bomba ya giró: un error de tipeo no debe obligar a repetir la medición.
+        while measured_ml is None:
+            raw = input("Volumen medido en el recipiente (ml): ").strip().replace(",", ".")
+            try:
+                value = float(raw)
+            except ValueError:
+                value = math.nan
+            if math.isfinite(value) and value > 0:
+                measured_ml = value
+            else:
+                print("escribe un volumen positivo en ml, por ejemplo 12,5", file=sys.stderr)
+
+        ml_per_min = measured_ml / seconds * 60.0
+        if not math.isfinite(ml_per_min) or ml_per_min <= 0:
+            raise ValueError("la calibración calculada no es válida")
+
+        previous = store.pump_ml_per_min(pump.id)
+        reference = previous if previous is not None else pump.ml_per_min
+        if reference is not None and not 0.5 <= ml_per_min / reference <= 2.0:
+            print(
+                f"aviso: {ml_per_min:.1f} ml/min se aleja mucho de la referencia "
+                f"({reference:.1f} ml/min)",
+                file=sys.stderr,
+            )
+            if not args.yes and not _confirm("¿Guardar de todos modos?"):
+                print("calibración descartada")
+                return 1
+        elif not args.yes and not _confirm(f"¿Guardar {ml_per_min:.1f} ml/min?"):
+            print("calibración descartada")
+            return 1
+
+        store.save_pump(pump.id, ml_per_min)
+        print(f"calibración guardada: {pump.id} = {ml_per_min:.2f} ml/min")
+        if previous is not None:
+            print(f"  valor anterior: {previous:.2f} ml/min")
         print("Reinicia hidro-core para aplicar la nueva calibración.")
         return 0
     except ValueError as exc:
@@ -763,6 +878,10 @@ def cmd_switch(args: argparse.Namespace) -> int:
 def cmd_pump(args: argparse.Namespace) -> int:
     from hidro.bootstrap import build_app
 
+    if not math.isfinite(args.ml) or args.ml <= 0:
+        print("--ml debe ser finito y positivo", file=sys.stderr)
+        return 2
+
     settings = _settings(verbose=True)
     config = load_config(settings.config_path, settings.mode_override)
     app = build_app(settings, config)
@@ -786,7 +905,7 @@ def cmd_pump(args: argparse.Namespace) -> int:
         actual = output.dispense_ml(args.ml)
         print(f"{args.id}: {args.ml:g} ml en {actual:.1f} s")
         return 0
-    except (PumpNotCalibrated, DoseTooLong) as exc:
+    except (PumpNotCalibrated, DoseTooLong, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     finally:
@@ -870,6 +989,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     flow_parser.set_defaults(func=cmd_calibrate_flow)
 
+    pump_cal_parser = calibrate_sub.add_parser(
+        "pump", help="calibrar el caudal de una bomba peristáltica"
+    )
+    pump_cal_parser.add_argument("--id", default=None, help="id de la bomba")
+    pump_cal_parser.add_argument(
+        "--seconds",
+        type=float,
+        default=60.0,
+        help="tiempo encendida para medir el volumen (60 s por defecto)",
+    )
+    pump_cal_parser.add_argument(
+        "--ml", type=float, default=None, help="volumen medido; si se omite, se pregunta"
+    )
+    pump_cal_parser.add_argument("--yes", action="store_true", help="no pedir confirmación")
+    pump_cal_parser.set_defaults(func=cmd_calibrate_pump)
+
     ph_parser = calibrate_sub.add_parser("ph", help="calibrar pH en dos puntos")
     ph_parser.add_argument("--point", type=float, required=True, help="pH del buffer")
     ph_parser.add_argument(
@@ -932,10 +1067,21 @@ def build_parser() -> argparse.ArgumentParser:
     alert_parser.set_defaults(func=cmd_alert_test)
 
     safety_parser = subparsers.add_parser(
-        "safety-reset", help="reiniciar bloqueos de seguridad"
+        "safety", help="gestionar los bloqueos de seguridad"
     )
-    safety_parser.add_argument("pump", nargs="?", default=None)
-    safety_parser.set_defaults(func=cmd_safety_reset)
+    safety_sub = safety_parser.add_subparsers(dest="safety_action", required=True)
+    safety_reset_parser = safety_sub.add_parser(
+        "reset", help="reiniciar bloqueos de seguridad"
+    )
+    safety_reset_parser.add_argument("pump", nargs="?", default=None)
+    safety_reset_parser.set_defaults(func=cmd_safety_reset)
+
+    # Se conserva el nombre anterior para no romper los comandos ya documentados.
+    legacy_safety_parser = subparsers.add_parser(
+        "safety-reset", help="reiniciar bloqueos de seguridad (nombre anterior)"
+    )
+    legacy_safety_parser.add_argument("pump", nargs="?", default=None)
+    legacy_safety_parser.set_defaults(func=cmd_safety_reset)
 
     version_parser = subparsers.add_parser("version", help="mostrar la versión")
     version_parser.set_defaults(func=cmd_version)

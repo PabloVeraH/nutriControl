@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -164,9 +165,23 @@ class RelayConfig(OutputBase):
     active_high: bool = True
 
 
+PumpRole = Literal["ph_down", "ph_up", "nutrient_a", "nutrient_b"]
+
+# Id convencional de cada rol: las reglas lo usan si ninguna bomba declara el rol.
+PUMP_ROLE_IDS: dict[PumpRole, str] = {
+    "ph_down": "pump_ph_down",
+    "ph_up": "pump_ph_up",
+    "nutrient_a": "pump_nutrient_a",
+    "nutrient_b": "pump_nutrient_b",
+}
+
+
 class PeristalticConfig(OutputBase):
     type: Literal["peristaltic"]
     gpio: int = Field(ge=0, le=27)
+    # El rol permite que las reglas encuentren la bomba aunque su id cambie.
+    # Si se omite, se usa el id convencional (pump_ph_down, etc.).
+    role: PumpRole | None = None
     ml_per_min: float | None = Field(default=None, gt=0)
     max_on_s: float = Field(default=30.0, gt=0)
     mock: MockOutputParams = Field(default_factory=MockOutputParams)
@@ -308,10 +323,33 @@ class AppConfig(StrictModel):
                 "(el TDS se enciende después de medir pH)"
             )
 
-        for pump_id in self.dosing.limits.max_ml_per_day:
+        roles = [
+            output.role
+            for output in self.outputs
+            if isinstance(output, PeristalticConfig) and output.role is not None
+        ]
+        duplicate_roles = {role for role in roles if roles.count(role) > 1}
+        if duplicate_roles:
+            raise ValueError(f"roles de bomba duplicados: {sorted(duplicate_roles)}")
+        # pump_ph_up con role: ph_down haría que la regla de "subir pH" use el ácido.
+        for pump in self.outputs:
+            if not isinstance(pump, PeristalticConfig) or pump.role is None:
+                continue
+            for role, conventional_id in PUMP_ROLE_IDS.items():
+                if pump.id == conventional_id and pump.role != role:
+                    raise ValueError(
+                        f"{pump.id}: su id es el convencional de '{role}' pero declara "
+                        f"role: {pump.role}; cambia el id o el rol"
+                    )
+
+        for pump_id, limit in self.dosing.limits.max_ml_per_day.items():
             output = self.output(pump_id)
             if not isinstance(output, PeristalticConfig):
                 raise ValueError(f"max_ml_per_day: {pump_id} no es una bomba peristáltica")
+            if not math.isfinite(limit) or limit <= 0:
+                raise ValueError(
+                    f"max_ml_per_day: el límite de {pump_id} debe ser finito y positivo"
+                )
 
         return self
 

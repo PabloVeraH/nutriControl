@@ -141,9 +141,11 @@ class Controller:
                 )
             except Exception as exc:
                 logger.exception("falló la dosificación con %s", action.pump_id)
+                self.app.safety.block(action.pump_id, f"fallo al dosificar: {exc}")
                 self.app.notifier.send(
                     f"⚠️ ERROR AL DOSIFICAR\n{action.pump_id}: {exc}. "
-                    "No se reintenta automáticamente en este ciclo."
+                    "La bomba queda bloqueada; corregir y ejecutar "
+                    "'hidro safety reset'."
                 )
                 continue
 

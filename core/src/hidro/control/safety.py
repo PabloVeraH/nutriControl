@@ -34,15 +34,20 @@ class SafetyGuard:
 
     # ------------------------------------------------------------------ consulta
 
-    def block_reason(self, pump_id: str, ml: float, now: datetime) -> str | None:
+    def block_reason(
+        self, pump_id: str, ml: float, now: datetime, *, dry_run: bool = False
+    ) -> str | None:
+        """Motivo para no dosificar; las simulaciones y las dosis reales se cuentan aparte."""
+        self._load()
         if pump_id in self._blocked:
             return self._blocked[pump_id]
 
-        hourly = sum(
-            1
+        records = [
+            record
             for record in self._records
-            if record.pump_id == pump_id and now - record.at <= timedelta(hours=1)
-        )
+            if record.pump_id == pump_id and record.dry_run == dry_run
+        ]
+        hourly = sum(1 for record in records if now - record.at <= timedelta(hours=1))
         if hourly >= self.limits.max_doses_per_hour:
             return (
                 f"{self.limits.max_doses_per_hour} dosis por hora alcanzadas en {pump_id}"
@@ -51,9 +56,7 @@ class SafetyGuard:
         daily_limit = self.limits.max_ml_per_day.get(pump_id)
         if daily_limit is not None:
             daily_ml = sum(
-                record.ml
-                for record in self._records
-                if record.pump_id == pump_id and now - record.at <= timedelta(days=1)
+                record.ml for record in records if now - record.at <= timedelta(days=1)
             )
             if daily_ml + ml > daily_limit:
                 return (
@@ -63,31 +66,44 @@ class SafetyGuard:
         return None
 
     def is_blocked(self, pump_id: str) -> bool:
+        self._load()
         return pump_id in self._blocked
 
     @property
     def blocked(self) -> dict[str, str]:
+        self._load()
         return dict(self._blocked)
 
     # ------------------------------------------------------------------ cambios
 
     def record(self, pump_id: str, ml: float, now: datetime, *, dry_run: bool = False) -> None:
+        self._load()
         self._records.append(DoseRecord(pump_id=pump_id, ml=ml, at=now, dry_run=dry_run))
         self._prune(now)
         self._save()
 
     def block(self, pump_id: str, reason: str) -> None:
+        self._load()
+        if self._blocked.get(pump_id) == reason:
+            return
         if pump_id not in self._blocked:
             logger.error("bomba %s bloqueada: %s", pump_id, reason)
+        else:
+            logger.error("bomba %s sigue bloqueada: %s", pump_id, reason)
         self._blocked[pump_id] = reason
         self._save()
 
     def reset(self, pump_id: str | None = None) -> None:
+        self._load()
         if pump_id is None:
             self._blocked.clear()
+            self._records.clear()
         else:
+            # Reiniciar una bomba no debe borrar los límites de las demás.
             self._blocked.pop(pump_id, None)
-        self._records.clear()
+            self._records = [
+                record for record in self._records if record.pump_id != pump_id
+            ]
         self._save()
         logger.info("seguridad reiniciada para %s", pump_id or "todas las bombas")
 
@@ -98,12 +114,17 @@ class SafetyGuard:
         self._records = [record for record in self._records if record.at >= cutoff]
 
     def _load(self) -> None:
+        # Se relee en cada operación: `hidro safety reset` corre en otro proceso
+        # mientras hidro-core sigue vivo y, sin releer, el núcleo volvería a
+        # escribir el bloqueo que se acaba de borrar.
         if not self.path.exists():
+            self._blocked = {}
+            self._records = []
             return
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
-            self._blocked = {str(k): str(v) for k, v in raw.get("blocked", {}).items()}
-            self._records = [
+            blocked = {str(k): str(v) for k, v in raw.get("blocked", {}).items()}
+            records = [
                 DoseRecord(
                     pump_id=item["pump"],
                     ml=float(item["ml"]),
@@ -112,10 +133,12 @@ class SafetyGuard:
                 )
                 for item in raw.get("doses", [])
             ]
-        except (OSError, ValueError, KeyError) as exc:
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+            # Un archivo dañado no debe desbloquear bombas: se conserva lo que había.
             logger.error("no se pudo leer el estado de seguridad %s: %s", self.path, exc)
-            self._blocked = {}
-            self._records = []
+            return
+        self._blocked = blocked
+        self._records = records
 
     def _save(self) -> None:
         payload = {
